@@ -15,12 +15,14 @@ pub struct ClipItem {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub max_history: usize,
     pub auto_paste: bool,
     pub theme: String, // "system" | "light" | "dark"
     pub poll_ms: u64,
     pub launch_on_login: bool,
+    pub data_dir: String, // empty = use default config dir
 }
 
 impl Default for Settings {
@@ -31,6 +33,7 @@ impl Default for Settings {
             theme: "system".into(),
             poll_ms: 700,
             launch_on_login: false,
+            data_dir: String::new(),
         }
     }
 }
@@ -68,6 +71,66 @@ impl Store {
 
     pub fn images_dir(&self) -> PathBuf {
         self.dir.join("images")
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Migrate all data (history, images, settings) to a new directory.
+    pub fn migrate_to(&self, new_dir: &Path) -> Result<Store, String> {
+        fs::create_dir_all(new_dir)
+            .map_err(|e| format!("Cannot create directory: {}", e))?;
+        fs::create_dir_all(new_dir.join("images"))
+            .map_err(|e| format!("Cannot create images directory: {}", e))?;
+
+        let history_src = self.dir.join("history.json");
+        let history_dst = new_dir.join("history.json");
+        if history_src.exists() {
+            fs::copy(&history_src, &history_dst)
+                .map_err(|e| format!("Cannot copy history: {}", e))?;
+        }
+
+        let images_src = self.images_dir();
+        let images_dst = new_dir.join("images");
+        if images_src.exists() {
+            for entry in fs::read_dir(&images_src).map_err(|e| format!("Cannot read images: {}", e))? {
+                let entry = entry.map_err(|e| format!("Cannot read image entry: {}", e))?;
+                let src = entry.path();
+                let Some(fname) = src.file_name() else { continue };
+                let dst = images_dst.join(fname);
+                fs::copy(&src, &dst).map_err(|e| format!("Cannot copy image: {}", e))?;
+            }
+        }
+
+        // Rewrite image paths in copied history so they point to the new directory.
+        if history_dst.exists() {
+            let history_str = fs::read_to_string(&history_dst)
+                .map_err(|e| format!("Cannot read copied history: {}", e))?;
+            let mut items: Vec<ClipItem> = serde_json::from_str(&history_str)
+                .map_err(|e| format!("Cannot parse copied history: {}", e))?;
+            for item in &mut items {
+                if let Some(ref mut path) = item.image_path {
+                    if let Some(fname) = Path::new(path).file_name() {
+                        *path = images_dst.join(fname).to_string_lossy().to_string();
+                    }
+                }
+            }
+            let fixed = serde_json::to_string_pretty(&items)
+                .map_err(|e| format!("Cannot serialize fixed history: {}", e))?;
+            fs::write(&history_dst, fixed)
+                .map_err(|e| format!("Cannot write fixed history: {}", e))?;
+        }
+
+        let mut new_settings = self.settings.clone();
+        new_settings.data_dir = new_dir.to_string_lossy().to_string();
+        let settings_dst = new_dir.join("settings.json");
+        let s = serde_json::to_string_pretty(&new_settings)
+            .map_err(|e| format!("Cannot serialize settings: {}", e))?;
+        fs::write(&settings_dst, s)
+            .map_err(|e| format!("Cannot write settings: {}", e))?;
+
+        Ok(Store::load(new_dir.to_path_buf()))
     }
 
     pub fn save_history(&self) {

@@ -3,6 +3,8 @@ mod hotkey;
 mod store;
 
 use clipboard::Backend;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -127,6 +129,45 @@ fn hide_window(app: AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
+}
+
+#[tauri::command]
+fn get_data_dir(state: State<AppState>) -> String {
+    state.store.lock().unwrap().dir().to_string_lossy().to_string()
+}
+
+#[tauri::command]
+fn set_data_dir(app: AppHandle, state: State<AppState>, new_dir: String) -> Result<Settings, String> {
+    if new_dir.trim().is_empty() {
+        return Err("Directory path cannot be empty".into());
+    }
+    let new_path = PathBuf::from(&new_dir);
+
+    let mut store = state.store.lock().unwrap();
+    let current_dir = store.dir().to_path_buf();
+
+    if current_dir.components().eq(new_path.components()) {
+        return Ok(store.settings.clone());
+    }
+
+    let new_store = store.migrate_to(&new_path)?;
+    let settings = new_store.settings.clone();
+    *store = new_store;
+    drop(store);
+
+    // Update bootstrap settings in default config dir so future startups find it.
+    let default_dir = store::config_dir_for("cleepboard");
+    let _ = fs::create_dir_all(&default_dir);
+    let bootstrap = Settings {
+        data_dir: new_path.to_string_lossy().to_string(),
+        ..settings.clone()
+    };
+    if let Ok(s) = serde_json::to_string_pretty(&bootstrap) {
+        let _ = fs::write(default_dir.join("settings.json"), s);
+    }
+
+    let _ = app.emit("settings-updated", settings.clone());
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -261,8 +302,26 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let backend = clipboard::detect_backend();
-    let dir = store::config_dir_for("cleepboard");
-    let store = Store::load(dir);
+    let default_dir = store::config_dir_for("cleepboard");
+    let _ = fs::create_dir_all(&default_dir);
+
+    let bootstrap_settings: Settings = fs::read_to_string(default_dir.join("settings.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let store_dir = if bootstrap_settings.data_dir.is_empty() {
+        default_dir.clone()
+    } else {
+        let custom = PathBuf::from(&bootstrap_settings.data_dir);
+        if custom.join("settings.json").exists() {
+            custom
+        } else {
+            default_dir.clone()
+        }
+    };
+
+    let store = Store::load(store_dir);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -294,6 +353,8 @@ pub fn run() {
             unregister_hotkey,
             hotkey_status,
             paste_tool_available,
+            get_data_dir,
+            set_data_dir,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

@@ -247,12 +247,14 @@ html, body {
   border-radius: var(--radius-sm); padding: 4px 8px; color: var(--text-secondary);
 }
 
-.select, .number {
+.select, .number, .text-input {
   font-family: inherit; font-size: var(--text-md); color: var(--text-primary);
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
-  padding: 6px 10px; cursor: pointer; user-select: text;
+  padding: 6px 10px; user-select: text;
 }
 .number { width: 80px; }
+.text-input { width: 180px; cursor: text; }
+.input-row { display: flex; gap: var(--space-sm); align-items: center; }
 
 /* Toggle */
 .toggle { position: relative; display: inline-block; width: 42px; height: 24px; }

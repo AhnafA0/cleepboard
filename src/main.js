@@ -268,6 +268,9 @@ async function loadSettings() {
   $("#theme").value = settings.theme;
   $("#max-history").value = settings.max_history;
 
+  const currentDir = await invoke("get_data_dir");
+  $("#data-dir").value = currentDir;
+
   const pasteOk = await invoke("paste_tool_available");
   if (!pasteOk) {
     $("#paste-desc").textContent = "Install 'wtype' to enable auto-paste; otherwise press Ctrl+V.";
@@ -285,6 +288,28 @@ $("#theme").addEventListener("change", (e) => { settings.theme = e.target.value;
 $("#max-history").addEventListener("change", (e) => {
   settings.max_history = Math.max(10, Number(e.target.value) || 100);
   saveSettings();
+});
+$("#data-dir-move").addEventListener("click", async () => {
+  const btn = $("#data-dir-move");
+  const input = $("#data-dir");
+  $("#data-dir-desc").textContent = "Where history and images are stored.";
+  btn.disabled = true;
+  btn.textContent = "Moving…";
+  try {
+    const newDir = input.value.trim();
+    if (!newDir) {
+      $("#data-dir-desc").textContent = "Please enter a directory path.";
+      return;
+    }
+    settings = await invoke("set_data_dir", { newDir });
+    input.value = settings.data_dir || newDir;
+    $("#data-dir-desc").textContent = "Data moved successfully.";
+  } catch (e) {
+    $("#data-dir-desc").textContent = "Error: " + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Move";
+  }
 });
 $("#clear-all").addEventListener("click", async () => {
   items = await invoke("clear_history", { keepPinned: true });
@@ -392,6 +417,14 @@ listen("overlay-shown", () => {
   switchView("history");
   refresh();
   searchEl.focus();
+});
+listen("settings-updated", (event) => {
+  settings = event.payload;
+  document.body.dataset.theme = settings.theme;
+  $("#auto-paste").checked = settings.auto_paste;
+  $("#theme").value = settings.theme;
+  $("#max-history").value = settings.max_history;
+  $("#data-dir").value = settings.data_dir || "";
 });
 
 // ===== Init =====
