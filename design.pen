@@ -5,7 +5,7 @@
       "type": "frame",
       "id": "W7zt6X",
       "x": 19,
-      "y": -365,
+      "y": -601,
       "name": "Design System",
       "fill": "$bg-primary",
       "cornerRadius": "$radius-xl",
@@ -605,6 +605,159 @@
                   "layout": "vertical",
                   "gap": 4,
                   "padding": 8
+                },
+                {
+                  "type": "frame",
+                  "id": "q8YZS8",
+                  "name": "Component/FilterChip",
+                  "reusable": true,
+                  "fill": "$bg-tertiary",
+                  "cornerRadius": 100,
+                  "gap": 4,
+                  "padding": [
+                    4,
+                    10
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Zkmp4",
+                      "name": "FilterLabel",
+                      "fill": "$text-secondary",
+                      "content": "All",
+                      "fontFamily": "Inter",
+                      "fontSize": "$text-sm",
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "iVhyE",
+                  "name": "Component/ClipCard/Image",
+                  "reusable": true,
+                  "width": 320,
+                  "fill": "$surface",
+                  "cornerRadius": "$radius-md",
+                  "stroke": "$border",
+                  "strokeWidth": 1,
+                  "gap": 12,
+                  "padding": 12,
+                  "children": [
+                    {
+                      "type": "rectangle",
+                      "cornerRadius": "$radius-sm",
+                      "id": "OmgR9",
+                      "name": "ClipThumb",
+                      "fill": "$bg-tertiary",
+                      "width": 48,
+                      "height": 48
+                    },
+                    {
+                      "type": "frame",
+                      "id": "WnUXF",
+                      "name": "ClipContentFrame",
+                      "fill": "#00000000",
+                      "layout": "vertical",
+                      "gap": 4,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "lWxzc",
+                          "name": "ClipText",
+                          "fill": "$text-primary",
+                          "textGrowth": "fixed-width",
+                          "width": 220,
+                          "content": "Screenshot_2024-06-19.png",
+                          "fontFamily": "Inter",
+                          "fontSize": "$text-md",
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "VUi7e",
+                          "name": "ClipMeta",
+                          "fill": "$text-muted",
+                          "content": "Image - 1280x720 - 5 min ago",
+                          "fontFamily": "Inter",
+                          "fontSize": "$text-sm",
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "uS2P1",
+                  "name": "Component/ClipCard/File",
+                  "reusable": true,
+                  "width": 320,
+                  "fill": "$surface",
+                  "cornerRadius": "$radius-md",
+                  "stroke": "$border",
+                  "strokeWidth": 1,
+                  "gap": 12,
+                  "padding": 12,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "boZ4b",
+                      "name": "ClipFileIcon",
+                      "width": 48,
+                      "height": 48,
+                      "fill": "$bg-tertiary",
+                      "cornerRadius": "$radius-sm",
+                      "layout": "vertical",
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "dfmez",
+                          "name": "ext",
+                          "fill": "$danger",
+                          "content": "PDF",
+                          "fontFamily": "Inter",
+                          "fontSize": "$text-sm",
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Dmsz1",
+                      "name": "ClipContentFrame",
+                      "fill": "#00000000",
+                      "layout": "vertical",
+                      "gap": 4,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "sRbvu",
+                          "name": "ClipText",
+                          "fill": "$text-primary",
+                          "textGrowth": "fixed-width",
+                          "width": 220,
+                          "content": "report-Q2-final.pdf",
+                          "fontFamily": "Inter",
+                          "fontSize": "$text-md",
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "U4nwl",
+                          "name": "ClipMeta",
+                          "fill": "$text-muted",
+                          "content": "File - 2.4 MB - 12 min ago",
+                          "fontFamily": "Inter",
+                          "fontSize": "$text-sm",
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
                 }
               ]
             }
@@ -1494,6 +1647,72 @@
                       "padding": 16,
                       "children": [
                         {
+                          "type": "frame",
+                          "id": "AfFKN",
+                          "name": "HistoryFilterRow",
+                          "fill": "#00000000",
+                          "gap": 6,
+                          "children": [
+                            {
+                              "id": "mzNsh",
+                              "type": "ref",
+                              "ref": "q8YZS8",
+                              "name": "FilterAll",
+                              "fill": "$accent",
+                              "descendants": {
+                                "Zkmp4": {
+                                  "content": "All",
+                                  "fill": "#FFFFFF"
+                                }
+                              }
+                            },
+                            {
+                              "id": "KG8rQ",
+                              "type": "ref",
+                              "ref": "q8YZS8",
+                              "name": "FilterText",
+                              "descendants": {
+                                "Zkmp4": {
+                                  "content": "Text"
+                                }
+                              }
+                            },
+                            {
+                              "id": "Gh15y",
+                              "type": "ref",
+                              "ref": "q8YZS8",
+                              "name": "FilterImages",
+                              "descendants": {
+                                "Zkmp4": {
+                                  "content": "Images"
+                                }
+                              }
+                            },
+                            {
+                              "id": "sZmR3",
+                              "type": "ref",
+                              "ref": "q8YZS8",
+                              "name": "FilterFiles",
+                              "descendants": {
+                                "Zkmp4": {
+                                  "content": "Files"
+                                }
+                              }
+                            },
+                            {
+                              "id": "hVKZ7",
+                              "type": "ref",
+                              "ref": "q8YZS8",
+                              "name": "FilterLinks",
+                              "descendants": {
+                                "Zkmp4": {
+                                  "content": "Links"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
                           "id": "Lv64I",
                           "type": "ref",
                           "ref": "wr91x",
@@ -1509,7 +1728,7 @@
                           "width": "fit_content",
                           "height": "fit_content",
                           "x": 16,
-                          "y": 64
+                          "y": 99
                         },
                         {
                           "id": "G7MAg",
@@ -1524,7 +1743,14 @@
                           "name": "HistoryClip1",
                           "cornerRadius": 12,
                           "justifyContent": "start",
-                          "alignItems": "center"
+                          "alignItems": "center",
+                          "descendants": {
+                            "AL7ZG": {
+                              "width": 48,
+                              "height": 48,
+                              "content": "T"
+                            }
+                          }
                         },
                         {
                           "id": "p8wZs",
@@ -1533,15 +1759,29 @@
                           "name": "HistoryClip2",
                           "justifyContent": "start",
                           "alignItems": "center",
-                          "cornerRadius": 12
+                          "cornerRadius": 12,
+                          "fill": "$bg-tertiary",
+                          "stroke": "$accent",
+                          "strokeWidth": 2,
+                          "effect": {
+                            "type": "shadow",
+                            "shadowType": "outer",
+                            "color": "$accent",
+                            "spread": 2
+                          },
+                          "descendants": {
+                            "AL7ZG": {
+                              "width": 48,
+                              "height": 48,
+                              "content": "T"
+                            }
+                          }
                         },
                         {
-                          "id": "I839yi",
+                          "id": "uBGOj",
                           "type": "ref",
-                          "ref": "y4kMU",
-                          "name": "HistoryClip3",
-                          "justifyContent": "start",
-                          "alignItems": "center"
+                          "ref": "iVhyE",
+                          "name": "HistoryClip3Image"
                         },
                         {
                           "id": "U4xbT",
@@ -1559,6 +1799,18 @@
                       "textGrowth": "fixed-width",
                       "width": 320,
                       "content": "History Overlay: Triggered by global hotkey (Ctrl+ShiftV / Cmd+ShiftV). Appears near cursor. Dismiss: Esc, click outside, or hotkey again. Auto-paste on select. Pinned section at top, then chronological.",
+                      "fontFamily": "Inter",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "I5p4a",
+                      "name": "NoteHistoryUpdates",
+                      "fill": "$text-secondary",
+                      "textGrowth": "fixed-width",
+                      "width": 320,
+                      "content": "Filter chips: All/Text/Images/Files/Links. Active chip = accent fill. Keyboard focus: arrow keys move focus ring between rows, Enter pastes. Clip 2 shows focused state, Clip 3 shows image variant.",
                       "fontFamily": "Inter",
                       "fontSize": 11,
                       "fontWeight": "normal"
@@ -2575,8 +2827,8 @@
                           "name": "icon",
                           "fill": "$accent-dark",
                           "textGrowth": "fixed-width-height",
-                          "width": 32,
-                          "height": 32,
+                          "width": 48,
+                          "height": 48,
                           "content": "T",
                           "textAlign": "center",
                           "textAlignVertical": "middle",
@@ -2642,8 +2894,8 @@
                           "name": "icon",
                           "fill": "$accent-dark",
                           "textGrowth": "fixed-width-height",
-                          "width": 32,
-                          "height": 32,
+                          "width": 48,
+                          "height": 48,
                           "content": "T",
                           "textAlign": "center",
                           "textAlignVertical": "middle",
@@ -2703,8 +2955,8 @@
                           "name": "icon",
                           "fill": "$accent-dark",
                           "textGrowth": "fixed-width-height",
-                          "width": 32,
-                          "height": 32,
+                          "width": 48,
+                          "height": 48,
                           "content": "T",
                           "textAlign": "center",
                           "textAlignVertical": "middle",
