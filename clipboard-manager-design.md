@@ -54,12 +54,12 @@ Build annotated screen mockups inside `design.pen` **exclusively by instantiatin
 
 ## 5. Component Maintenance & Updates
 - When iterating, edit the source component frame in the design system section — all screen instances update automatically
-- Keep a changelog of component versions (e.g., `ClipCard v1.2`)
+- Keep a changelog of component versions (e.g., `Cleepboard v1.2`)
 - Periodically audit screens to ensure no orphaned primitives exist outside the design system
 
 ## 6. Cross-Platform Behavior Spec
 Document how the app should feel native on each OS:
-- **Invocation:** global hotkey (e.g., `Ctrl+Shift+V` / `Cmd+Shift+V`) opens the overlay near the cursor or screen center
+- **Invocation:** global hotkey (e.g., `Ctrl+V`) opens the overlay near the cursor or screen center
 - **Dismissal:** `Esc`, clicking outside, or pressing the hotkey again
 - **Auto-paste:** selecting an item immediately pastes it at the cursor (configurable)
 - **Tray integration:** system tray on Windows/Linux, menu bar on macOS
