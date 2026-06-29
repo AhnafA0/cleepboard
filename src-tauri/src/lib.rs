@@ -18,6 +18,12 @@ pub struct AppState {
     backend: Backend,
     // Signature of the value we last *set* ourselves, so the watcher ignores it.
     self_set: Mutex<Option<String>>,
+    // Whether auto-hide-on-focus-loss is armed. Set to false whenever the
+    // overlay is shown and only re-armed once the window has actually gained
+    // focus (Focused(true)). This prevents the spurious focus-loss event that
+    // compositors emit while a window is mapping (especially on Wayland) from
+    // instantly hiding the overlay right after launch.
+    focus_armed: Mutex<bool>,
 }
 
 fn sig_text(t: &str) -> String {
@@ -198,6 +204,10 @@ fn show_overlay(app: &AppHandle) {
         let _ = win.show();
         let _ = win.set_focus();
         let _ = win.center();
+        if let Some(state) = app.try_state::<AppState>() {
+            // Disarm auto-hide until the window has actually gained focus.
+            *state.focus_armed.lock().unwrap() = false;
+        }
         let _ = app.emit("overlay-shown", ());
     }
 }
@@ -337,6 +347,7 @@ pub fn run() {
             store: Mutex::new(store),
             backend,
             self_set: Mutex::new(None),
+            focus_armed: Mutex::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             get_history,
@@ -379,10 +390,23 @@ pub fn run() {
                             let _ = w.hide();
                         }
                     }
-                    // Auto-hide when the overlay loses focus (click-outside / Esc-to-blur).
+                    // Arm auto-hide once the window has actually gained focus.
+                    if let WindowEvent::Focused(true) = event {
+                        if let Some(s) = h.try_state::<AppState>() {
+                            *s.focus_armed.lock().unwrap() = true;
+                        }
+                    }
+                    // Auto-hide when the overlay loses focus (click-outside / Esc-to-blur),
+                    // but only after it has been focused at least once since being shown.
                     if let WindowEvent::Focused(false) = event {
-                        if let Some(w) = h.get_webview_window("main") {
-                            let _ = w.hide();
+                        let armed = h
+                            .try_state::<AppState>()
+                            .map(|s| *s.focus_armed.lock().unwrap())
+                            .unwrap_or(false);
+                        if armed {
+                            if let Some(w) = h.get_webview_window("main") {
+                                let _ = w.hide();
+                            }
                         }
                     }
                 });

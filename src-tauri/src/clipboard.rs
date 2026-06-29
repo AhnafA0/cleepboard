@@ -1,6 +1,18 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+/// Build a `Command` for a clipboard helper with desktop startup/activation
+/// tokens stripped. Without this, every short-lived `wl-paste`/`wl-copy` we
+/// spawn inherits the parent's `XDG_ACTIVATION_TOKEN`/`DESKTOP_STARTUP_ID` and
+/// GNOME treats it as an app that launched but never mapped a window, spamming
+/// "<app> is ready" notifications and stealing focus from our overlay.
+fn helper(cmd: &str) -> Command {
+    let mut c = Command::new(cmd);
+    c.env_remove("XDG_ACTIVATION_TOKEN");
+    c.env_remove("DESKTOP_STARTUP_ID");
+    c
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Wayland,
@@ -92,7 +104,7 @@ fn run_capture(cmd: &str, args: &[&str]) -> Option<String> {
 }
 
 fn run_capture_bytes(cmd: &str, args: &[&str]) -> Option<Vec<u8>> {
-    let out = Command::new(cmd).args(args).output().ok()?;
+    let out = helper(cmd).args(args).output().ok()?;
     if out.status.success() {
         Some(out.stdout)
     } else {
@@ -101,7 +113,7 @@ fn run_capture_bytes(cmd: &str, args: &[&str]) -> Option<Vec<u8>> {
 }
 
 fn pipe_to(cmd: &str, args: &[&str], data: &[u8]) -> bool {
-    let child = Command::new(cmd)
+    let child = helper(cmd)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -126,7 +138,7 @@ pub fn auto_paste(backend: Backend) -> bool {
         Backend::Wayland => {
             // wtype is the common Wayland keystroke tool.
             if which("wtype") {
-                return Command::new("wtype")
+                return helper("wtype")
                     .args(["-M", "ctrl", "v", "-m", "ctrl"])
                     .status()
                     .map(|s| s.success())
@@ -134,7 +146,7 @@ pub fn auto_paste(backend: Backend) -> bool {
             }
             // ydotool requires a running daemon + uinput access.
             if which("ydotool") {
-                return Command::new("ydotool")
+                return helper("ydotool")
                     .args(["key", "29:1", "47:1", "47:0", "29:0"])
                     .status()
                     .map(|s| s.success())
@@ -144,7 +156,7 @@ pub fn auto_paste(backend: Backend) -> bool {
         }
         Backend::X11 => {
             if which("xdotool") {
-                return Command::new("xdotool")
+                return helper("xdotool")
                     .args(["key", "--clearmodifiers", "ctrl+v"])
                     .status()
                     .map(|s| s.success())

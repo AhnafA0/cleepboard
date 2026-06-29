@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Cleepboard
+Comment=Lightweight clipboard manager
+Exec=/opt/cleepboard/cleepboard --show
+Icon=/opt/cleepboard/cleepboard.png
+Terminal=false
+Categories=Utility;
+StartupNotify=true
