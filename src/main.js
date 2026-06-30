@@ -6,7 +6,10 @@ let items = [];
 let filtered = [];
 let selectedIndex = 0;
 let currentView = "history";
+let activeFilter = "all";
 let settings = { auto_paste: true, theme: "system", max_history: 100 };
+
+const URL_RE = /^https?:\/\//;
 
 const $ = (sel) => document.querySelector(sel);
 const listEl = $("#list");
@@ -36,8 +39,18 @@ function iconFor(item) {
   if (item.kind === "image") {
     return `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>`;
   }
+  if (item.kind === "file") {
+    // Framed extension badge (ClipFileIcon). Use the first filename's ext;
+    // fall back to "FILE" when there's no extension. Preview is comma-joined
+    // for multi-file clips, so isolate the first filename and anchor to its
+    // final dot so `report.final.pdf` -> PDF, not FIN.
+    const first = (item.preview || "").split(",")[0].trim();
+    const m = first.match(/\.(\w+)$/);
+    const ext = m ? m[1].toUpperCase().slice(0, 4) : "FILE";
+    return `<span class="clip-file-ext">${escapeHtml(ext)}</span>`;
+  }
   const t = item.text || "";
-  if (/^https?:\/\//.test(t.trim())) {
+  if (URL_RE.test(t.trim())) {
     return `<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>`;
   }
   if (looksLikeCode(t)) {
@@ -52,6 +65,14 @@ function applyFilter() {
   filtered = q
     ? items.filter((i) => (i.preview || "").toLowerCase().includes(q))
     : items.slice();
+  if (activeFilter !== "all") {
+    filtered = filtered.filter((i) => {
+      if (activeFilter === "link")
+        return i.kind === "text" && URL_RE.test((i.text || "").trim());
+      if (activeFilter === "file") return i.kind === "file"; // see Plan 03
+      return i.kind === activeFilter; // "text" | "image"
+    });
+  }
   if (selectedIndex >= filtered.length) selectedIndex = Math.max(0, filtered.length - 1);
   renderList();
 }
@@ -91,7 +112,7 @@ function renderList() {
 function sectionHeader(label, count) {
   const el = document.createElement("div");
   el.className = "section-header";
-  el.innerHTML = `<span>${label}</span><span class="count">· ${count}</span>`;
+  el.innerHTML = `<span class="section-header-text"><span>${label}</span><span class="count">· ${count}</span></span>`;
   return el;
 }
 
@@ -104,7 +125,8 @@ function clipEl(item) {
 
   const icon = iconFor(item);
   const isImg = item.kind === "image";
-  const textCls = looksLikeCode(item.text || "") ? "clip-text mono" : "clip-text";
+  const isFile = item.kind === "file";
+  const textCls = !isFile && looksLikeCode(item.text || "") ? "clip-text mono" : "clip-text";
   const pin = item.pinned
     ? `<span class="pin-chip"><svg viewBox="0 0 24 24"><path d="M12 2l2 7h7l-5.5 4 2 7L12 16l-5.5 4 2-7L3 9h7z"/></svg>Pinned</span>`
     : "";
@@ -144,7 +166,7 @@ function clipEl(item) {
   });
   el.addEventListener("mouseenter", () => {
     selectedIndex = idx;
-    highlightSelected();
+    highlightSelected(false);
   });
   return el;
 }
@@ -158,10 +180,13 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function highlightSelected() {
+function highlightSelected(viaKeyboard = false) {
   document.querySelectorAll(".clip").forEach((el) => {
     const on = Number(el.dataset.index) === selectedIndex;
     el.classList.toggle("selected", on);
+    // The accent ring marks the keyboard-highlighted row only; mouse hover
+    // sets the selected fill without the ring (ClipCard/Focused vs Selected).
+    el.classList.toggle("focused", on && viaKeyboard);
     if (on) el.scrollIntoView({ block: "nearest" });
   });
 }
@@ -195,10 +220,22 @@ let detailItem = null;
 async function openDetail(item) {
   detailItem = item;
   const body = $("#detail-body");
-  $("#detail-title").textContent = item.kind === "image" ? "Image clip" : "Text clip";
+  const meta = $("#detail-meta");
+  $("#detail-title").textContent =
+    item.kind === "image" ? "Image clip" : item.kind === "file" ? "File clip" : "Text clip";
+  // Metadata strip: timestamp + source app. Source-app capture is X11-only;
+  // on Wayland it is `null` and we show "Unknown" (see Plan 05).
+  const time = new Date(item.timestamp * 1000).toLocaleString();
+  const src = item.source_app ? escapeHtml(item.source_app) : "Unknown";
+  meta.innerHTML = `<span>Copied ${time}</span><span class="detail-meta-sep">·</span><span>From ${src}</span>`;
   if (item.kind === "image") {
     const url = await invoke("get_image_data_url", { id: item.id });
     body.innerHTML = `<img src="${url}" alt="" />`;
+  } else if (item.kind === "file") {
+    // `text` holds the raw `text/uri-list` payload; show one URI per line.
+    const full = await invoke("get_item_text", { id: item.id });
+    const lines = (full || "").split("\n").filter(Boolean);
+    body.innerHTML = `<pre>${escapeHtml(lines.join("\n"))}</pre>`;
   } else {
     const full = await invoke("get_item_text", { id: item.id });
     body.innerHTML = `<pre>${escapeHtml(full || item.preview || "")}</pre>`;
@@ -236,18 +273,111 @@ document.querySelectorAll(".tab").forEach((t) => {
   t.addEventListener("click", () => switchView(t.dataset.view));
 });
 
+// ===== Filter chips =====
+document.querySelectorAll(".filter-chip").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    document.querySelectorAll(".filter-chip").forEach((c) => c.classList.remove("active"));
+    chip.classList.add("active");
+    activeFilter = chip.dataset.filter;
+    selectedIndex = 0;
+    applyFilter();
+  });
+});
+
 // ===== Emoji picker =====
-const EMOJI = "😀 😂 😍 🥰 😎 🤔 😅 😭 😡 👍 👎 👏 🙏 💪 🔥 ✨ 🎉 ❤️ 💔 ⭐ ✅ ❌ ⚠️ 💡 📌 📎 ✂️ 📋 🔍 🔒 🔓 🚀 🌟 🐛 ⚡ 💻 📱 ⌨️ 🖱️ 📁 📂 🗑️ ➡️ ⬅️ ⬆️ ⬇️ ↩️ 🔄 ➕ ➖ ✔️ ✖️ © ® ™ → ← ↑ ↓ ⇧ ⌘ ⌥ ⏎ ⌫ ° µ § ¶ • – — « »".split(/\s+/).filter(Boolean);
+const EMOJI = [
+  { ch: "😀", name: "grin happy face smile" },
+  { ch: "😂", name: "joy laugh cry face" },
+  { ch: "😍", name: "heart eyes love face" },
+  { ch: "🥰", name: "love hearts face adore" },
+  { ch: "😎", name: "cool sunglasses face smile" },
+  { ch: "🤔", name: "think ponder face hmm" },
+  { ch: "😅", name: "sweat laugh face nervous" },
+  { ch: "😭", name: "cry sob tears face sad" },
+  { ch: "😡", name: "angry rage face mad" },
+  { ch: "👍", name: "thumbs up yes like" },
+  { ch: "👎", name: "thumbs down no dislike" },
+  { ch: "👏", name: "clap applause hands" },
+  { ch: "🙏", name: "pray thanks hands please" },
+  { ch: "💪", name: "muscle strong arm flex" },
+  { ch: "🔥", name: "fire flame hot lit" },
+  { ch: "✨", name: "sparkles shine magic" },
+  { ch: "🎉", name: "party celebrate tada" },
+  { ch: "❤️", name: "heart love red" },
+  { ch: "💔", name: "broken heart sad love" },
+  { ch: "⭐", name: "star favorite" },
+  { ch: "✅", name: "check mark done yes" },
+  { ch: "❌", name: "cross mark no x" },
+  { ch: "⚠️", name: "warning caution alert" },
+  { ch: "💡", name: "idea light bulb" },
+  { ch: "📌", name: "pin pushpin mark" },
+  { ch: "📎", name: "paperclip attach" },
+  { ch: "✂️", name: "scissors cut" },
+  { ch: "📋", name: "clipboard copy paste" },
+  { ch: "🔍", name: "search magnify glass" },
+  { ch: "🔒", name: "lock locked secure" },
+  { ch: "🔓", name: "unlock unlocked open" },
+  { ch: "🚀", name: "rocket launch ship" },
+  { ch: "🌟", name: "star glow sparkle" },
+  { ch: "🐛", name: "bug insect" },
+  { ch: "⚡", name: "zap lightning bolt fast" },
+  { ch: "💻", name: "computer laptop" },
+  { ch: "📱", name: "phone mobile" },
+  { ch: "⌨️", name: "keyboard type" },
+  { ch: "🖱️", name: "mouse click pointer" },
+  { ch: "📁", name: "folder file directory" },
+  { ch: "📂", name: "folder open file directory" },
+  { ch: "🗑️", name: "trash delete bin wastebasket" },
+  { ch: "➡️", name: "arrow right" },
+  { ch: "⬅️", name: "arrow left" },
+  { ch: "⬆️", name: "arrow up" },
+  { ch: "⬇️", name: "arrow down" },
+  { ch: "↩️", name: "arrow return enter back" },
+  { ch: "🔄", name: "refresh reload cycle sync" },
+  { ch: "➕", name: "plus add math" },
+  { ch: "➖", name: "minus subtract math" },
+  { ch: "✔️", name: "check mark done yes" },
+  { ch: "✖️", name: "multiply cross math" },
+  { ch: "©", name: "copyright c" },
+  { ch: "®", name: "registered r" },
+  { ch: "™", name: "trademark tm" },
+  { ch: "→", name: "arrow right" },
+  { ch: "←", name: "arrow left" },
+  { ch: "↑", name: "arrow up" },
+  { ch: "↓", name: "arrow down" },
+  { ch: "⇧", name: "shift arrow up" },
+  { ch: "⌘", name: "command cmd meta" },
+  { ch: "⌥", name: "option alt" },
+  { ch: "⏎", name: "return enter" },
+  { ch: "⌫", name: "backspace delete" },
+  { ch: "°", name: "degree" },
+  { ch: "µ", name: "micro mu" },
+  { ch: "§", name: "section" },
+  { ch: "¶", name: "paragraph pilcrow" },
+  { ch: "•", name: "bullet dot" },
+  { ch: "–", name: "en dash" },
+  { ch: "—", name: "em dash" },
+  { ch: "«", name: "quote left guillemet" },
+  { ch: "»", name: "quote right guillemet" },
+];
 
 function renderEmoji(query) {
   const grid = $("#emoji-grid");
   grid.innerHTML = "";
-  const list = EMOJI; // simple set; search filters by raw char
-  list.forEach((ch) => {
+  const q = (query || "").trim().toLowerCase();
+  const list = q
+    ? EMOJI.filter((e) => e.name.includes(q) || e.ch === q)
+    : EMOJI;
+  if (list.length === 0) {
+    grid.innerHTML = '<div class="emoji-empty">No emoji match "' + escapeHtml(query) + '"</div>';
+    return;
+  }
+  list.forEach((e) => {
     const cell = document.createElement("div");
     cell.className = "emoji-cell";
-    cell.textContent = ch;
-    cell.addEventListener("click", () => copyRaw(ch));
+    cell.textContent = e.ch;
+    cell.title = e.name;
+    cell.addEventListener("click", () => copyRaw(e.ch));
     grid.appendChild(cell);
   });
 }
@@ -371,12 +501,12 @@ window.addEventListener("keydown", (e) => {
     case "ArrowDown":
       e.preventDefault();
       selectedIndex = Math.min(selectedIndex + 1, filtered.length - 1);
-      highlightSelected();
+      highlightSelected(true);
       break;
     case "ArrowUp":
       e.preventDefault();
       selectedIndex = Math.max(selectedIndex - 1, 0);
-      highlightSelected();
+      highlightSelected(true);
       break;
     case "Enter":
       e.preventDefault();
@@ -414,6 +544,10 @@ listen("overlay-shown", () => {
   searchEl.value = "";
   $("#clear-search").classList.add("hidden");
   selectedIndex = 0;
+  activeFilter = "all";
+  document.querySelectorAll(".filter-chip").forEach((c) =>
+    c.classList.toggle("active", c.dataset.filter === "all")
+  );
   switchView("history");
   refresh();
   searchEl.focus();

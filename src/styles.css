@@ -16,7 +16,7 @@
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
-  --radius-xl: 16px;
+  --radius-xl: 12px;
 
   --space-xs: 4px;
   --space-sm: 8px;
@@ -131,6 +131,22 @@ html, body {
 .view { display: none; flex: 1; min-height: 0; }
 .view.active { display: flex; flex-direction: column; }
 
+/* ===== Filter chips ===== */
+.filter-row { display: flex; gap: var(--space-xs); flex-wrap: wrap; }
+.filter-chip {
+  font-family: inherit; font-size: var(--text-sm); font-weight: 600;
+  padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  background: var(--bg-secondary); color: var(--text-secondary);
+  border: 2px solid var(--border); transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.filter-chip:hover { background: var(--bg-tertiary); }
+.filter-chip.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.filter-chip:focus-visible {
+  outline: none; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
 /* ===== Scrollable list ===== */
 .scroll-list {
   flex: 1; min-height: 0; overflow-y: auto; outline: none;
@@ -149,6 +165,11 @@ html, body {
   text-transform: uppercase; letter-spacing: 0.04em;
   padding: var(--space-sm) var(--space-xs) 2px;
 }
+/* Flanking hairline dividers (Component/SectionHeader SectionLineL/R). */
+.section-header::before, .section-header::after {
+  content: ""; height: 1px; background: var(--border); flex: 1;
+}
+.section-header .section-header-text { display: inline-flex; align-items: baseline; gap: var(--space-xs); flex: none; }
 .section-header .count { font-weight: 500; }
 
 /* ===== Clip card ===== */
@@ -160,6 +181,8 @@ html, body {
 }
 .clip:hover { background: var(--bg-secondary); }
 .clip.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+/* Keyboard-focus ring, distinct from the selected fill (ClipCard/Focused). */
+.clip.focused { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 50%, transparent); }
 .clip:active { transform: scale(0.997); }
 
 .clip-icon {
@@ -169,6 +192,13 @@ html, body {
 }
 .clip-icon svg { width: 17px; height: 17px; stroke: var(--accent); fill: none; stroke-width: 2; }
 .clip-icon img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-sm); }
+/* Framed file-extension badge (ClipFileIcon) for file clips. */
+.clip-icon .clip-file-ext {
+  font-size: 9px; font-weight: 700; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: var(--radius-sm); padding: 2px 4px; line-height: 1;
+}
 
 .clip-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .clip-text {
@@ -202,6 +232,18 @@ html, body {
 .btn.danger { background: transparent; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); width: 100%; }
 .btn.danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
 
+/* Ghost variant (Component/Button/Ghost) — transparent until hovered. */
+.btn.ghost { background: transparent; color: var(--text-secondary); border-color: transparent; }
+.btn.ghost:hover { background: var(--bg-secondary); color: var(--text-primary); }
+
+/* Keyboard focus ring for all clickable controls (Button/Primary/Focused). */
+.btn:focus-visible,
+.icon-btn:focus-visible,
+.tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
 .icon-btn {
   width: 28px; height: 28px; border: none; background: transparent; border-radius: var(--radius-sm);
   cursor: pointer; display: grid; place-items: center;
@@ -231,6 +273,10 @@ html, body {
   border-radius: var(--radius-md); cursor: pointer; transition: background 0.1s;
 }
 .emoji-cell:hover, .emoji-cell.selected { background: var(--bg-tertiary); }
+.emoji-empty {
+  grid-column: 1 / -1; text-align: center; color: var(--text-muted);
+  font-size: var(--text-md); padding: var(--space-xl);
+}
 
 /* ===== Settings ===== */
 .settings { overflow-y: auto; gap: var(--space-lg); }
@@ -280,5 +326,10 @@ kbd {
 .dialog-body pre { font-family: var(--font-mono); font-size: var(--text-sm); white-space: pre-wrap; word-break: break-word; }
 .dialog-body img { max-width: 100%; border-radius: var(--radius-md); }
 .dialog-foot { padding: var(--space-md) var(--space-lg); border-top: 1px solid var(--border); display: flex; justify-content: flex-end; }
+/* Clip Detail metadata strip (Plan 05): timestamp + source app, sits between
+   the dialog head and the preview body. Empty until openDetail() fills it. */
+.detail-meta { display: flex; gap: var(--space-sm); align-items: center; flex-wrap: wrap; font-size: var(--text-sm); color: var(--text-muted); padding: var(--space-sm) var(--space-lg); border-bottom: 1px solid var(--border); }
+.detail-meta:empty { display: none; }
+.detail-meta-sep { opacity: 0.6; }
 
 .hidden { display: none !important; }

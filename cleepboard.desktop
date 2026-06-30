@@ -2,8 +2,8 @@
 Type=Application
 Name=Cleepboard
 Comment=Lightweight clipboard manager
-Exec=/opt/cleepboard/cleepboard --show
-Icon=/opt/cleepboard/cleepboard.png
+Exec=/home/ahnaf_a0/.local/bin/cleepboard --show
+Icon=/home/ahnaf_a0/.local/share/icons/cleepboard.png
 Terminal=false
 Categories=Utility;
-StartupNotify=true
+StartupNotify=false

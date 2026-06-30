@@ -6,7 +6,7 @@ Create a clean, Apple-inspired brand book and polished UI mockups in `design.pen
 - Define color palette (soft neutrals, subtle grays, one calm accent)
 - Typography scale (system fonts for native feel)
 - Spacing, radius, shadow, and elevation rules
-- **Stroke rules** — strokes are always **uniform on all sides** (`strokeWidth: <number>`, never a per-side `{ left, top, right, bottom }` object). Active/selected/focused states express emphasis via a uniform 2px accent stroke with `strokeAlignment: "outer"` plus an optional outer accent shadow — never via a single-sided (e.g. left-only) border. This keeps focus rings visually consistent across components and themes.
+- **Stroke rules** — strokes are always **uniform on all sides** (`strokeWidth: <number>`, never a per-side `{ left, top, right, bottom }` object). Default borders use a uniform 2px stroke. Active/selected/focused states express emphasis via a uniform 4px accent stroke with `strokeAlignment: "outer"` plus an optional outer accent shadow — never via a single-sided (e.g. left-only) border. This keeps focus rings visually consistent across components and themes.
 - Iconography style (SF Symbols / Lucide-like, outlined, minimal)
 - Light and dark mode definitions
 - Store all tokens as reusable variables in `design.pen` so they propagate to components and screens

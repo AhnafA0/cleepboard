@@ -18,12 +18,6 @@ pub struct AppState {
     backend: Backend,
     // Signature of the value we last *set* ourselves, so the watcher ignores it.
     self_set: Mutex<Option<String>>,
-    // Whether auto-hide-on-focus-loss is armed. Set to false whenever the
-    // overlay is shown and only re-armed once the window has actually gained
-    // focus (Focused(true)). This prevents the spurious focus-loss event that
-    // compositors emit while a window is mapping (especially on Wayland) from
-    // instantly hiding the overlay right after launch.
-    focus_armed: Mutex<bool>,
 }
 
 fn sig_text(t: &str) -> String {
@@ -31,6 +25,9 @@ fn sig_text(t: &str) -> String {
 }
 fn sig_image(len: usize) -> String {
     format!("i:{}", len)
+}
+fn sig_file(payload: &str) -> String {
+    format!("f:{}", payload)
 }
 
 #[tauri::command]
@@ -114,6 +111,14 @@ fn copy_item(app: AppHandle, state: State<AppState>, id: String, paste: bool) ->
             }
             None => false,
         },
+        // File clips store the raw `text/uri-list` payload in `text`; re-copy
+        // must write it back with the `text/uri-list` mime type so file
+        // managers accept the paste.
+        "file" => {
+            let payload = text.unwrap_or_default();
+            *state.self_set.lock().unwrap() = Some(sig_file(&payload));
+            clipboard::set_files(backend, &payload)
+        }
         _ => false,
     };
 
@@ -201,15 +206,86 @@ fn paste_tool_available(state: State<AppState>) -> bool {
 
 fn show_overlay(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
+        // On X11, position the overlay near the pointer (NoteHistory: "Appears
+        // near cursor"). Wayland clients can't freely position their own
+        // windows or read the pointer from a background process, so there we
+        // rely on `center: true` from the window config instead.
+        let backend = app.state::<AppState>().backend;
+        if backend == Backend::X11 {
+            position_near_cursor(&win);
+        }
         let _ = win.show();
         let _ = win.set_focus();
-        let _ = win.center();
-        if let Some(state) = app.try_state::<AppState>() {
-            // Disarm auto-hide until the window has actually gained focus.
-            *state.focus_armed.lock().unwrap() = false;
-        }
         let _ = app.emit("overlay-shown", ());
     }
+}
+
+/// Best-effort near-cursor positioning for X11. Reads the pointer via
+/// `xdotool getmouselocation` and places the window's top-left so the overlay
+/// opens roughly under the cursor, clamped to the current monitor's bounds.
+/// Silently does nothing if xdotool is missing or anything fails — the window
+/// then keeps its configured `center: true` position.
+fn position_near_cursor(win: &tauri::WebviewWindow) {
+    use tauri::PhysicalPosition;
+
+    if !clipboard::which("xdotool") {
+        return;
+    }
+    let out = match clipboard::run_capture("xdotool", &["getmouselocation"]) {
+        Some(s) => s,
+        None => return,
+    };
+    let (mut x, mut y) = match parse_mouse_location(&out) {
+        Some(p) => p,
+        None => return,
+    };
+
+    let size = win.outer_size().unwrap_or_default();
+    let (w, h) = (size.width as i32, size.height as i32);
+
+    // Center the window on the cursor horizontally; sit just above it so the
+    // overlay doesn't cover what the user is about to paste into.
+    x -= w / 2;
+    y -= h + 12;
+
+    // Clamp to the monitor the cursor is on so we never land off-screen.
+    if let Ok(Some(monitor)) = win.current_monitor() {
+        let pos = monitor.position();
+        let mon = monitor.size();
+        let min_x = pos.x;
+        let min_y = pos.y;
+        let max_x = pos.x + mon.width as i32 - w;
+        let max_y = pos.y + mon.height as i32 - h;
+        if max_x > min_x {
+            x = x.clamp(min_x, max_x);
+        } else {
+            x = min_x;
+        }
+        if max_y > min_y {
+            y = y.clamp(min_y, max_y);
+        } else {
+            y = min_y;
+        }
+    } else {
+        if x < 0 { x = 0; }
+        if y < 0 { y = 0; }
+    }
+
+    let _ = win.set_position(PhysicalPosition::new(x, y));
+}
+
+/// Parse `x:N y:N screen:N window:N` from `xdotool getmouselocation`.
+fn parse_mouse_location(s: &str) -> Option<(i32, i32)> {
+    let mut x = None;
+    let mut y = None;
+    for part in s.split_whitespace() {
+        if let Some(rest) = part.strip_prefix("x:") {
+            x = rest.parse::<i32>().ok();
+        } else if let Some(rest) = part.strip_prefix("y:") {
+            y = rest.parse::<i32>().ok();
+        }
+    }
+    Some((x?, y?))
 }
 
 fn toggle_overlay(app: &AppHandle) {
@@ -241,6 +317,7 @@ fn spawn_watcher(app: AppHandle) {
             let sig = match &content {
                 clipboard::ClipContent::Text(t) => Some(sig_text(t)),
                 clipboard::ClipContent::Image(b) => Some(sig_image(b.len())),
+                clipboard::ClipContent::Files(uris) => Some(sig_file(&uris.join("\n"))),
                 clipboard::ClipContent::Empty => None,
             };
             let sig = match sig {
@@ -259,11 +336,17 @@ fn spawn_watcher(app: AppHandle) {
             }
             last_sig = Some(sig);
 
+            // Snapshot the focused window *before* we touch the clipboard so
+            // the source-app metadata reflects the app that owned the
+            // selection at copy time. X11-only; None on Wayland.
+            let source_app = clipboard::active_window_name(backend);
+
             let added = {
                 let mut store = state.store.lock().unwrap();
                 match content {
-                    clipboard::ClipContent::Text(t) => store.add_text(t),
-                    clipboard::ClipContent::Image(b) => store.add_image(&b),
+                    clipboard::ClipContent::Text(t) => store.add_text(t, source_app.clone()),
+                    clipboard::ClipContent::Image(b) => store.add_image(&b, source_app.clone()),
+                    clipboard::ClipContent::Files(uris) => store.add_file(uris, source_app.clone()),
                     clipboard::ClipContent::Empty => false,
                 }
             };
@@ -311,7 +394,22 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's DMABUF renderer (default since 2.42) does not do correct
+    // damage tracking for transparent webviews under GNOME/Mutter on Wayland.
+    // The result is constant full-surface repaints — the screen appears to
+    // continuously "refresh" and the dock's active-window indicator flickers.
+    // Disabling the DMABUF renderer restores normal damage-based compositing
+    // while keeping the transparent rounded-overlay design intact.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     let backend = clipboard::detect_backend();
+    if backend == Backend::Wayland {
+        // Best-effort; only relevant on Wayland and harmless to retry every
+        // launch. See doc comment on the function for why this is needed.
+        clipboard::suppress_wl_clipboard_notifications();
+    }
     let default_dir = store::config_dir_for("cleepboard");
     let _ = fs::create_dir_all(&default_dir);
 
@@ -347,7 +445,6 @@ pub fn run() {
             store: Mutex::new(store),
             backend,
             self_set: Mutex::new(None),
-            focus_armed: Mutex::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             get_history,
@@ -390,25 +487,14 @@ pub fn run() {
                             let _ = w.hide();
                         }
                     }
-                    // Arm auto-hide once the window has actually gained focus.
-                    if let WindowEvent::Focused(true) = event {
-                        if let Some(s) = h.try_state::<AppState>() {
-                            *s.focus_armed.lock().unwrap() = true;
-                        }
-                    }
-                    // Auto-hide when the overlay loses focus (click-outside / Esc-to-blur),
-                    // but only after it has been focused at least once since being shown.
-                    if let WindowEvent::Focused(false) = event {
-                        let armed = h
-                            .try_state::<AppState>()
-                            .map(|s| *s.focus_armed.lock().unwrap())
-                            .unwrap_or(false);
-                        if armed {
-                            if let Some(w) = h.get_webview_window("main") {
-                                let _ = w.hide();
-                            }
-                        }
-                    }
+                    // NOTE: We deliberately do NOT auto-hide on focus loss.
+                    // On GNOME/Wayland this undecorated, always-on-top overlay
+                    // cannot reliably hold keyboard focus — it receives a
+                    // Focused(true) immediately followed by Focused(false) right
+                    // after being shown, which would instantly hide it and make
+                    // the app look like it crashed. The overlay is dismissed via
+                    // Esc (handled in the frontend -> hide_window), by selecting
+                    // an item, or by toggling from the tray.
                 });
             }
             Ok(())

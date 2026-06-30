@@ -294,7 +294,7 @@
                       "fill": "$surface",
                       "cornerRadius": "$radius-lg",
                       "stroke": "$border",
-                      "strokeWidth": 1,
+                      "strokeWidth": 2,
                       "gap": 8,
                       "padding": [
                         0,
@@ -493,7 +493,7 @@
                   "fill": "$surface",
                   "cornerRadius": "$radius-md",
                   "stroke": "$border",
-                  "strokeWidth": 1,
+                  "strokeWidth": 2,
                   "gap": 12,
                   "padding": 12,
                   "alignItems": "center",
@@ -602,7 +602,7 @@
                   "fill": "$surface",
                   "cornerRadius": "$radius-lg",
                   "stroke": "$border",
-                  "strokeWidth": 1,
+                  "strokeWidth": 2,
                   "layout": "vertical",
                   "gap": 4,
                   "padding": 8
@@ -642,7 +642,7 @@
                   "fill": "$surface",
                   "cornerRadius": "$radius-md",
                   "stroke": "$border",
-                  "strokeWidth": 1,
+                  "strokeWidth": 2,
                   "gap": 12,
                   "padding": 12,
                   "children": [
@@ -698,7 +698,7 @@
                   "fill": "$surface",
                   "cornerRadius": "$radius-md",
                   "stroke": "$border",
-                  "strokeWidth": 1,
+                  "strokeWidth": 2,
                   "gap": 12,
                   "padding": 12,
                   "children": [
@@ -867,7 +867,7 @@
                   "fill": "$surface",
                   "cornerRadius": "$radius-xl",
                   "stroke": "$border",
-                  "strokeWidth": 1,
+                  "strokeWidth": 2,
                   "effect": {
                     "type": "shadow",
                     "shadowType": "outer",
@@ -1109,7 +1109,7 @@
                   "fill": "$accent",
                   "cornerRadius": "$radius-md",
                   "stroke": "#FFFFFF",
-                  "strokeWidth": 2,
+                  "strokeWidth": 4,
                   "strokeAlignment": "inner",
                   "effect": {
                     "type": "shadow",
@@ -1181,7 +1181,7 @@
                   "fill": "$bg-secondary",
                   "cornerRadius": "$radius-md",
                   "stroke": "$border",
-                  "strokeWidth": 1,
+                  "strokeWidth": 2,
                   "gap": 12,
                   "padding": 12,
                   "alignItems": "center",
@@ -1243,7 +1243,7 @@
                   "fill": "$bg-tertiary",
                   "cornerRadius": "$radius-md",
                   "stroke": "$accent",
-                  "strokeWidth": 2,
+                  "strokeWidth": 4,
                   "gap": 12,
                   "padding": 12,
                   "alignItems": "center",
@@ -1305,7 +1305,7 @@
                   "fill": "$surface",
                   "cornerRadius": "$radius-md",
                   "stroke": "$accent",
-                  "strokeWidth": 2,
+                  "strokeWidth": 4,
                   "effect": {
                     "type": "shadow",
                     "shadowType": "outer",
@@ -1384,7 +1384,7 @@
                   "fill": "$surface",
                   "cornerRadius": "$radius-lg",
                   "stroke": "$accent",
-                  "strokeWidth": 2,
+                  "strokeWidth": 4,
                   "gap": 8,
                   "padding": [
                     0,
@@ -1423,7 +1423,7 @@
                   "fill": "$surface",
                   "cornerRadius": "$radius-lg",
                   "stroke": "$border",
-                  "strokeWidth": 1,
+                  "strokeWidth": 2,
                   "gap": 8,
                   "padding": [
                     0,
@@ -1535,7 +1535,7 @@
                   "fill": "$bg-tertiary",
                   "cornerRadius": "$radius-md",
                   "stroke": "$accent",
-                  "strokeWidth": 2,
+                  "strokeWidth": 4,
                   "strokeAlignment": "outer",
                   "gap": 8,
                   "padding": [
@@ -1635,7 +1635,7 @@
                       "fill": "$surface",
                       "cornerRadius": "$radius-xl",
                       "stroke": "$border",
-                      "strokeWidth": 1,
+                      "strokeWidth": 2,
                       "effect": {
                         "type": "shadow",
                         "shadowType": "outer",
@@ -1769,7 +1769,7 @@
                           "cornerRadius": 12,
                           "fill": "$bg-tertiary",
                           "stroke": "$accent",
-                          "strokeWidth": 2,
+                          "strokeWidth": 4,
                           "effect": {
                             "type": "shadow",
                             "shadowType": "outer",
@@ -1839,7 +1839,7 @@
                       "fill": "$surface",
                       "cornerRadius": "$radius-xl",
                       "stroke": "$border",
-                      "strokeWidth": 1,
+                      "strokeWidth": 2,
                       "effect": {
                         "type": "shadow",
                         "shadowType": "outer",
@@ -1987,7 +1987,7 @@
                       "fill": "$surface",
                       "cornerRadius": "$radius-xl",
                       "stroke": "$border",
-                      "strokeWidth": 1,
+                      "strokeWidth": 2,
                       "effect": {
                         "type": "shadow",
                         "shadowType": "outer",
@@ -2358,7 +2358,7 @@
                       "fill": "$surface",
                       "cornerRadius": "$radius-lg",
                       "stroke": "$border",
-                      "strokeWidth": 1,
+                      "strokeWidth": 2,
                       "effect": {
                         "type": "shadow",
                         "shadowType": "outer",
@@ -2498,7 +2498,7 @@
                       "fill": "$surface",
                       "cornerRadius": "$radius-xl",
                       "stroke": "$border",
-                      "strokeWidth": 1,
+                      "strokeWidth": 2,
                       "children": [
                         {
                           "type": "frame",
@@ -2686,7 +2686,7 @@
                   "fill": "$surface-dark",
                   "cornerRadius": "$radius-xl",
                   "stroke": "$border-dark",
-                  "strokeWidth": 1,
+                  "strokeWidth": 2,
                   "effect": {
                     "type": "shadow",
                     "shadowType": "outer",
@@ -2710,7 +2710,7 @@
                       "fill": "$bg-secondary-dark",
                       "cornerRadius": "$radius-lg",
                       "stroke": "$border-dark",
-                      "strokeWidth": 1,
+                      "strokeWidth": 2,
                       "gap": 8,
                       "padding": [
                         0,
@@ -2824,7 +2824,7 @@
                       "fill": "$bg-secondary-dark",
                       "cornerRadius": "$radius-md",
                       "stroke": "$border-dark",
-                      "strokeWidth": 1,
+                      "strokeWidth": 2,
                       "gap": 12,
                       "padding": 12,
                       "alignItems": "center",
@@ -2886,7 +2886,7 @@
                       "fill": "$bg-tertiary-dark",
                       "cornerRadius": "$radius-md",
                       "stroke": "$accent-dark",
-                      "strokeWidth": 2,
+                      "strokeWidth": 4,
                       "effect": {
                         "type": "shadow",
                         "shadowType": "outer",
@@ -2954,7 +2954,7 @@
                       "fill": "$bg-secondary-dark",
                       "cornerRadius": "$radius-md",
                       "stroke": "$border-dark",
-                      "strokeWidth": 1,
+                      "strokeWidth": 2,
                       "gap": 12,
                       "padding": 12,
                       "alignItems": "center",
@@ -3056,7 +3056,7 @@
                   "fill": "$surface-dark",
                   "cornerRadius": "$radius-xl",
                   "stroke": "$border-dark",
-                  "strokeWidth": 1,
+                  "strokeWidth": 2,
                   "children": [
                     {
                       "type": "frame",
@@ -3084,7 +3084,7 @@
                           "fill": "$bg-tertiary-dark",
                           "cornerRadius": "$radius-md",
                           "stroke": "$accent-dark",
-                          "strokeWidth": 2,
+                          "strokeWidth": 4,
                           "gap": 8,
                           "padding": [
                             0,
