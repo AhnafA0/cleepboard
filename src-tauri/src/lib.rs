@@ -1,4 +1,5 @@
 mod clipboard;
+mod deps;
 mod hotkey;
 mod store;
 
@@ -122,15 +123,23 @@ fn copy_item(app: AppHandle, state: State<AppState>, id: String, paste: bool) ->
         _ => false,
     };
 
-    // Hide the overlay before pasting so focus returns to the target app.
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.hide();
-    }
-
-    if ok && paste {
-        // Small delay so the compositor restores focus to the previous window.
-        thread::sleep(Duration::from_millis(120));
-        clipboard::auto_paste(backend);
+    // On write failure keep the overlay open — the frontend shows a notice
+    // that must actually be seen.
+    if ok {
+        // Hide the overlay before pasting so focus returns to the target app.
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.hide();
+        }
+        if paste {
+            // Small delay so the compositor restores focus to the previous window.
+            thread::sleep(Duration::from_millis(120));
+            clipboard::auto_paste(backend);
+        }
+    } else {
+        // Nothing was written — drop the marker or it would suppress a real
+        // copy of the same content. (The pre-write set still guards the poll
+        // race between set_* returning and the watcher's next read.)
+        *state.self_set.lock().unwrap() = None;
     }
     ok
 }
@@ -192,100 +201,29 @@ fn unregister_hotkey() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn hotkey_status() -> bool {
-    hotkey::is_registered()
+fn hotkey_status() -> hotkey::HotkeyStatus {
+    hotkey::status()
 }
 
+/// Probe the external helper binaries cleepboard shells out to so the UI can
+/// surface missing tools instead of silently degrading.
 #[tauri::command]
-fn paste_tool_available(state: State<AppState>) -> bool {
-    match state.backend {
-        Backend::Wayland => clipboard::which("wtype") || clipboard::which("ydotool"),
-        Backend::X11 => clipboard::which("xdotool"),
-    }
+fn check_dependencies(state: State<AppState>) -> deps::DependencyReport {
+    deps::report(state.backend)
 }
 
 fn show_overlay(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
-        // On X11, position the overlay near the pointer (NoteHistory: "Appears
-        // near cursor"). Wayland clients can't freely position their own
-        // windows or read the pointer from a background process, so there we
-        // rely on `center: true` from the window config instead.
-        let backend = app.state::<AppState>().backend;
-        if backend == Backend::X11 {
-            position_near_cursor(&win);
-        }
+        // The window is a fullscreen, transparent, undecorated, always-on-top
+        // overlay: Wayland clients cannot position their own windows, so the
+        // panel's placement lives entirely in CSS (`.panel` in styles.css).
+        // That makes the layout identical on X11 and Wayland and gives a real
+        // backdrop for click-to-dismiss. A fullscreen toplevel maps to one
+        // monitor only — inherent to this approach, not fixable client-side.
         let _ = win.show();
         let _ = win.set_focus();
         let _ = app.emit("overlay-shown", ());
     }
-}
-
-/// Best-effort near-cursor positioning for X11. Reads the pointer via
-/// `xdotool getmouselocation` and places the window's top-left so the overlay
-/// opens roughly under the cursor, clamped to the current monitor's bounds.
-/// Silently does nothing if xdotool is missing or anything fails — the window
-/// then keeps its configured `center: true` position.
-fn position_near_cursor(win: &tauri::WebviewWindow) {
-    use tauri::PhysicalPosition;
-
-    if !clipboard::which("xdotool") {
-        return;
-    }
-    let out = match clipboard::run_capture("xdotool", &["getmouselocation"]) {
-        Some(s) => s,
-        None => return,
-    };
-    let (mut x, mut y) = match parse_mouse_location(&out) {
-        Some(p) => p,
-        None => return,
-    };
-
-    let size = win.outer_size().unwrap_or_default();
-    let (w, h) = (size.width as i32, size.height as i32);
-
-    // Center the window on the cursor horizontally; sit just above it so the
-    // overlay doesn't cover what the user is about to paste into.
-    x -= w / 2;
-    y -= h + 12;
-
-    // Clamp to the monitor the cursor is on so we never land off-screen.
-    if let Ok(Some(monitor)) = win.current_monitor() {
-        let pos = monitor.position();
-        let mon = monitor.size();
-        let min_x = pos.x;
-        let min_y = pos.y;
-        let max_x = pos.x + mon.width as i32 - w;
-        let max_y = pos.y + mon.height as i32 - h;
-        if max_x > min_x {
-            x = x.clamp(min_x, max_x);
-        } else {
-            x = min_x;
-        }
-        if max_y > min_y {
-            y = y.clamp(min_y, max_y);
-        } else {
-            y = min_y;
-        }
-    } else {
-        if x < 0 { x = 0; }
-        if y < 0 { y = 0; }
-    }
-
-    let _ = win.set_position(PhysicalPosition::new(x, y));
-}
-
-/// Parse `x:N y:N screen:N window:N` from `xdotool getmouselocation`.
-fn parse_mouse_location(s: &str) -> Option<(i32, i32)> {
-    let mut x = None;
-    let mut y = None;
-    for part in s.split_whitespace() {
-        if let Some(rest) = part.strip_prefix("x:") {
-            x = rest.parse::<i32>().ok();
-        } else if let Some(rest) = part.strip_prefix("y:") {
-            y = rest.parse::<i32>().ok();
-        }
-    }
-    Some((x?, y?))
 }
 
 fn toggle_overlay(app: &AppHandle) {
@@ -460,7 +398,7 @@ pub fn run() {
             register_hotkey,
             unregister_hotkey,
             hotkey_status,
-            paste_tool_available,
+            check_dependencies,
             get_data_dir,
             set_data_dir,
         ])
@@ -469,9 +407,11 @@ pub fn run() {
             build_tray(&handle)?;
             spawn_watcher(handle.clone());
 
-            // If launched with --toggle on first start, still show the window.
+            // --show and a cold-start --toggle (e.g. first hotkey press after
+            // reboot, before any instance ran) both show the window; anything
+            // else starts hidden in the tray.
             let args: Vec<String> = std::env::args().collect();
-            let start_hidden = !args.iter().any(|a| a == "--show");
+            let start_hidden = !args.iter().any(|a| a == "--show" || a == "--toggle");
             if let Some(win) = app.get_webview_window("main") {
                 if start_hidden {
                     let _ = win.hide();
@@ -493,7 +433,8 @@ pub fn run() {
                     // Focused(true) immediately followed by Focused(false) right
                     // after being shown, which would instantly hide it and make
                     // the app look like it crashed. The overlay is dismissed via
-                    // Esc (handled in the frontend -> hide_window), by selecting
+                    // Esc (handled in the frontend -> hide_window), a click on
+                    // the transparent backdrop outside the panel, by selecting
                     // an item, or by toggling from the tray.
                 });
             }
@@ -506,7 +447,7 @@ pub fn run() {
 // Minimal base64 encoder (avoids pulling an extra crate).
 fn base64_encode(input: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = *chunk.get(1).unwrap_or(&0) as u32;

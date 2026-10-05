@@ -7,7 +7,8 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body data-theme="system">
-    <div id="overlay" class="overlay">
+    <div id="overlay" class="overlay enter">
+      <div class="panel">
       <!-- Top bar: search + view switch -->
       <header class="topbar">
         <div class="search">
@@ -38,6 +39,15 @@
           </button>
         </div>
       </header>
+
+      <!-- Missing-tools banner (filled by check_dependencies; session-dismissed) -->
+      <div id="dep-banner" class="dep-banner hidden" role="alert">
+        <svg class="dep-banner-icon" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span id="dep-banner-text" class="dep-banner-text"></span>
+        <button id="dep-banner-close" class="icon-btn ghost" title="Dismiss">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
 
       <!-- HISTORY VIEW -->
       <main id="view-history" class="view active">
@@ -71,7 +81,7 @@
           <div class="setting-row">
             <div>
               <p class="setting-label">Global hotkey</p>
-              <p class="setting-desc">Opens the overlay from anywhere (GNOME).</p>
+              <p class="setting-desc">Opens the overlay from anywhere.</p>
             </div>
             <span id="hotkey-badge" class="kbd-badge">Ctrl + Shift + V</span>
           </div>
@@ -82,6 +92,7 @@
             </div>
             <button id="hotkey-toggle" class="btn secondary">Register</button>
           </div>
+          <pre id="hotkey-instructions" class="hotkey-instructions hidden"></pre>
         </section>
 
         <section class="setting-group">
@@ -125,6 +136,17 @@
           </div>
         </section>
 
+        <section class="setting-group">
+          <div class="setting-row">
+            <div>
+              <p class="setting-label">System tools</p>
+              <p id="deps-summary" class="setting-desc">Checking…</p>
+            </div>
+            <button id="deps-recheck" class="btn secondary">Recheck</button>
+          </div>
+          <div id="deps-list"></div>
+        </section>
+
         <section class="setting-group danger-group">
           <button id="clear-all" class="btn danger">Clear history (keep pinned)</button>
         </section>
@@ -138,6 +160,8 @@
         <span><kbd>Del</kbd> remove</span>
         <span><kbd>Esc</kbd> close</span>
       </footer>
+
+      </div>
     </div>
 
     <!-- Clip detail modal -->
@@ -154,6 +178,11 @@
         </footer>
       </div>
     </div>
+
+    <!-- Transient status notice (e.g. clipboard write failure). Lives at
+         body level — inside .panel its backdrop-filter stacking context
+         would put it behind #detail's scrim, hiding failure toasts. -->
+    <div id="toast" class="toast hidden"></div>
 
     <script type="module" src="main.js"></script>
   </body>

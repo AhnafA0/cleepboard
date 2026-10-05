@@ -12,16 +12,11 @@
       {
         "label": "main",
         "title": "Cleepboard",
-        "width": 380,
-        "height": 540,
-        "minWidth": 360,
-        "minHeight": 300,
-        "resizable": true,
+        "fullscreen": true,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "center": true,
         "visible": false,
         "focus": true
       }
@@ -40,6 +35,18 @@
     ],
     "category": "Utility",
     "shortDescription": "Lightweight clipboard manager",
-    "longDescription": "Cleepboard is a lightweight, design-first clipboard history manager for Linux."
+    "longDescription": "Cleepboard is a lightweight, design-first clipboard history manager for Linux.",
+    "linux": {
+      "deb": {
+        "depends": ["libc6"],
+        "recommends": ["wl-clipboard", "xclip", "wtype", "xdotool"],
+        "desktopTemplate": "cleepboard.desktop"
+      },
+      "rpm": {
+        "depends": ["glibc"],
+        "recommends": ["wl-clipboard", "xclip", "wtype", "xdotool"],
+        "desktopTemplate": "cleepboard.desktop"
+      }
+    }
   }
 }

@@ -28,8 +28,9 @@ cp src-tauri/target/release/cleepboard ~/.local/bin/cleepboard
 cp cleepboard.desktop ~/.local/share/applications/cleepboard.desktop
 ```
 
-`xclip` must be installed (`sudo dnf install -y xclip`) — writes go through it
-on both X11 and Wayland (see Conventions).
+The app tolerates missing helper tools (see Conventions) — install at least
+`xclip` (`sudo dnf install -y xclip`) for the preferred write path, plus
+`wl-clipboard`/`wtype`/`xdotool` as needed (see README's runtime-tools table).
 
 ## Conventions
 
@@ -45,8 +46,24 @@ on both X11 and Wayland (see Conventions).
   `suppress_wl_clipboard_notifications()` (called at startup) installs a hidden
   `.desktop` + `gsettings enable=false` as best-effort mitigation. All clipboard
   helpers are invoked via stdin/stdout pipes — never shell-interpolated, so no
-  injection risk. `xclip` is now a hard runtime prerequisite (install with
-  `sudo dnf install -y xclip`).
+  injection risk. `xclip` is no longer a hard prerequisite: `deps.rs` models
+  every probed tool's `ToolStatus`/`covered_by`, and the `check_dependencies`
+  command feeds a System-tools list + banner in the UI so a missing tool
+  degrades visibly instead of silently. Keep that report honest when adding a
+  new helper call.
+- Window: a fullscreen, transparent, undecorated, always-on-top overlay; the
+  visible `.panel` is positioned entirely in CSS (no programmatic positioning —
+  Wayland forbids it anyway), so layout is identical on X11 and Wayland and the
+  transparent region doubles as a click-to-dismiss backdrop. Do NOT auto-hide
+  on focus loss: GNOME/Mutter flap `Focused(true)`→`Focused(false)` on show,
+  which would hide the overlay instantly (Esc/backdrop click/tray toggle
+  dismiss instead).
+- Global hotkey: `hotkey.rs` registers `cleepboard --toggle` per DE — GNOME
+  (incl. Unity/Budgie) via `gsettings`, KDE via the `kglobalaccel` D-Bus API +
+  a command desktop file, Cinnamon via its `gsettings` schema, XFCE via
+  `xfconf-query`; anything else falls back to per-DE manual instructions
+  surfaced through `status()`. The freedesktop GlobalShortcuts portal was
+  evaluated and rejected — see the module doc comment for why.
 - File clips store the raw `text/uri-list` payload in `ClipItem.text`; decode
   only for the `preview` display (`percent_decode` / `uri_file_name`).
 - De-dupe/self-set signatures must stay consistent between `store.add_*` and

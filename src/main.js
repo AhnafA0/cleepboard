@@ -12,6 +12,7 @@ let settings = { auto_paste: true, theme: "system", max_history: 100 };
 const URL_RE = /^https?:\/\//;
 
 const $ = (sel) => document.querySelector(sel);
+const overlayEl = $("#overlay");
 const listEl = $("#list");
 const searchEl = $("#search");
 const emptyEl = $("#empty");
@@ -172,8 +173,14 @@ function clipEl(item) {
 }
 
 async function loadThumb(container, id) {
-  const url = await invoke("get_image_data_url", { id });
-  if (url) container.innerHTML = `<img src="${url}" alt="" />`;
+  const url = await invoke("get_image_data_url", { id }).catch(() => null);
+  if (url) {
+    container.innerHTML = `<img src="${url}" alt="" />`;
+  } else {
+    // Image file is gone (or unreadable) — muted strike-through icon.
+    container.innerHTML = `<svg class="thumb-missing" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/><line x1="4" y1="20" x2="20" y2="4"/></svg>`;
+    container.title = "image unavailable";
+  }
 }
 
 function escapeHtml(s) {
@@ -200,7 +207,8 @@ async function refresh() {
 async function pasteSelected() {
   const item = filtered[selectedIndex];
   if (!item) return;
-  await invoke("copy_item", { id: item.id, paste: settings.auto_paste });
+  const ok = await invoke("copy_item", { id: item.id, paste: settings.auto_paste });
+  if (!ok) showToast(copyFailMsg());
 }
 
 async function pinItem(id) {
@@ -229,8 +237,10 @@ async function openDetail(item) {
   const src = item.source_app ? escapeHtml(item.source_app) : "Unknown";
   meta.innerHTML = `<span>Copied ${time}</span><span class="detail-meta-sep">·</span><span>From ${src}</span>`;
   if (item.kind === "image") {
-    const url = await invoke("get_image_data_url", { id: item.id });
-    body.innerHTML = `<img src="${url}" alt="" />`;
+    const url = await invoke("get_image_data_url", { id: item.id }).catch(() => null);
+    body.innerHTML = url
+      ? `<img src="${url}" alt="" />`
+      : `<p class="detail-unavailable">Image unavailable — the stored file is gone.</p>`;
   } else if (item.kind === "file") {
     // `text` holds the raw `text/uri-list` payload; show one URI per line.
     const full = await invoke("get_item_text", { id: item.id });
@@ -245,11 +255,24 @@ async function openDetail(item) {
 
 $("#detail-close").addEventListener("click", () => detailEl.classList.add("hidden"));
 $("#detail-copy").addEventListener("click", async () => {
-  if (detailItem) await invoke("copy_item", { id: detailItem.id, paste: settings.auto_paste });
+  if (detailItem) {
+    const ok = await invoke("copy_item", { id: detailItem.id, paste: settings.auto_paste });
+    if (!ok) {
+      showToast(copyFailMsg());
+      return;
+    }
+  }
   detailEl.classList.add("hidden");
 });
 detailEl.addEventListener("click", (e) => {
   if (e.target === detailEl) detailEl.classList.add("hidden");
+});
+
+// Backdrop click dismissal: .overlay is the transparent fullscreen layer
+// around .panel — a click that lands on it directly (not inside the panel)
+// closes the overlay. The detail modal sits above it and stops its own.
+overlayEl.addEventListener("click", (e) => {
+  if (e.target === overlayEl) invoke("hide_window");
 });
 
 // ===== View switching =====
@@ -390,6 +413,108 @@ async function copyRaw(text) {
   await invoke("hide_window");
 }
 
+// ===== System tools =====
+let depReport = null;
+let depBannerDismissed = false;
+let toastTimer = null;
+
+function showToast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), 3000);
+}
+
+function copyFailMsg() {
+  const missing = (depReport ? depReport.tools : []).filter(
+    (t) => t.group.includes("write") && !t.covered_by
+  );
+  return missing.length
+    ? `Couldn't copy — install ${missing.map((t) => t.name).join(" or ")}.`
+    : "Couldn't copy — clipboard write failed.";
+}
+
+async function checkDependencies() {
+  try {
+    depReport = await invoke("check_dependencies");
+  } catch (_) {
+    depReport = null;
+  }
+  renderDepBanner();
+  renderDepList();
+}
+
+// Tools serving a core feature that nothing installed covers → drives the banner.
+function missingRequired() {
+  const byFeature = {};
+  (depReport ? depReport.tools : []).forEach((t) => {
+    if (t.required && !t.covered_by) (byFeature[t.feature] = byFeature[t.feature] || []).push(t);
+  });
+  return byFeature;
+}
+
+function renderDepBanner() {
+  const banner = $("#dep-banner");
+  const parts = Object.entries(missingRequired()).map(
+    ([feature, tools]) => `${tools.map((t) => t.name).join(" or ")} — ${tools[0].breaks}`
+  );
+  if (depBannerDismissed || parts.length === 0) {
+    banner.classList.add("hidden");
+    return;
+  }
+  $("#dep-banner-text").textContent =
+    `Missing system tools: ${parts.join("  ·  ")}. See Settings → System tools.`;
+  banner.classList.remove("hidden");
+}
+
+function renderDepList() {
+  const list = $("#deps-list");
+  const summary = $("#deps-summary");
+  if (!depReport) {
+    summary.textContent = "Check unavailable.";
+    list.innerHTML = "";
+    return;
+  }
+  const missing = depReport.tools.filter((t) => !t.present).length;
+  summary.textContent = missing
+    ? `${missing} missing on ${depReport.backend}.`
+    : `All present (${depReport.backend}).`;
+  list.innerHTML = "";
+  depReport.tools.forEach((t) => {
+    const row = document.createElement("div");
+    row.className = "setting-row dep-row";
+    const badgeCls = t.present ? "present" : t.covered_by ? "missing covered" : "missing";
+    const badge = t.present ? "present" : t.covered_by ? `missing — covered by ${t.covered_by}` : "missing";
+    const install = t.present
+      ? ""
+      : `<div class="dep-install">` +
+        ["apt", "dnf", "pacman", "zypper"]
+          .map((pm) => `<span>${pm}: ${escapeHtml(t.install[pm])}</span>`)
+          .join("") +
+        `</div>`;
+    const desc =
+      escapeHtml(t.feature) +
+      (t.present ? "" : ` — ${escapeHtml(t.breaks)}`) +
+      (t.note ? ` · ${escapeHtml(t.note)}` : "");
+    row.innerHTML = `
+      <div>
+        <p class="setting-label dep-name">${escapeHtml(t.name)} <span class="dep-badge ${badgeCls}">${badge}</span></p>
+        <p class="setting-desc">${desc}</p>
+        ${install}
+      </div>`;
+    list.appendChild(row);
+  });
+}
+
+$("#dep-banner").addEventListener("click", () => switchView("settings"));
+$("#dep-banner-close").addEventListener("click", (e) => {
+  e.stopPropagation();
+  depBannerDismissed = true;
+  $("#dep-banner").classList.add("hidden");
+});
+$("#deps-recheck").addEventListener("click", checkDependencies);
+
 // ===== Settings UI =====
 async function loadSettings() {
   settings = await invoke("get_settings");
@@ -401,9 +526,10 @@ async function loadSettings() {
   const currentDir = await invoke("get_data_dir");
   $("#data-dir").value = currentDir;
 
-  const pasteOk = await invoke("paste_tool_available");
-  if (!pasteOk) {
-    $("#paste-desc").textContent = "Install 'wtype' to enable auto-paste; otherwise press Ctrl+V.";
+  const pasteTools = (depReport ? depReport.tools : []).filter((t) => t.group === "paste");
+  if (pasteTools.length && pasteTools.every((t) => !t.covered_by)) {
+    const names = pasteTools.map((t) => t.name).join(" or ");
+    $("#paste-desc").textContent = `Install ${names} to enable auto-paste; otherwise press Ctrl+V.`;
   }
   await refreshHotkeyStatus();
 }
@@ -446,16 +572,41 @@ $("#clear-all").addEventListener("click", async () => {
   applyFilter();
 });
 
+const HOTKEY_MECH_LABELS = { gnome: "GNOME", kde: "KDE Plasma", cinnamon: "Cinnamon", xfce: "XFCE" };
+
 async function refreshHotkeyStatus() {
-  const reg = await invoke("hotkey_status");
-  $("#hotkey-status").textContent = reg ? "Registered ✓ — press Ctrl+Shift+V anywhere." : "Not registered yet.";
-  $("#hotkey-toggle").textContent = reg ? "Unregister" : "Register";
-  $("#hotkey-toggle").dataset.reg = reg ? "1" : "0";
+  const st = await invoke("hotkey_status");
+  const btn = $("#hotkey-toggle");
+  const pre = $("#hotkey-instructions");
+  if (st.mechanism === "manual") {
+    $("#hotkey-status").textContent = "No automatic registration on this desktop — bind it manually:";
+    btn.textContent = "Register";
+    btn.dataset.reg = "0";
+    btn.disabled = true;
+  } else {
+    const mech = HOTKEY_MECH_LABELS[st.mechanism] || st.mechanism;
+    $("#hotkey-status").textContent = st.registered
+      ? `Registered via ${mech} — press Ctrl+Shift+V anywhere.`
+      : `Not registered (${mech}).`;
+    btn.textContent = st.registered ? "Unregister" : "Register";
+    btn.dataset.reg = st.registered ? "1" : "0";
+    btn.disabled = false;
+  }
+  // Manual steps: needed on manual desktops, or as a fallback when an
+  // automatic mechanism exists but hasn't registered yet. Once registered
+  // they hide — nothing left to do.
+  if (st.mechanism === "manual" || !st.registered) {
+    pre.textContent = st.instructions;
+    pre.classList.remove("hidden");
+  } else {
+    pre.classList.add("hidden");
+  }
 }
 
 $("#hotkey-toggle").addEventListener("click", async () => {
   const btn = $("#hotkey-toggle");
   btn.disabled = true;
+  let error = null;
   try {
     if (btn.dataset.reg === "1") {
       await invoke("unregister_hotkey");
@@ -463,10 +614,12 @@ $("#hotkey-toggle").addEventListener("click", async () => {
       await invoke("register_hotkey", { binding: "<Control><Shift>v" });
     }
   } catch (e) {
-    $("#hotkey-status").textContent = "Error: " + e;
+    error = e;
   }
-  btn.disabled = false;
   await refreshHotkeyStatus();
+  // Write the failure after the refresh — refreshHotkeyStatus rewrites
+  // #hotkey-status and would erase the concrete error.
+  if (error) $("#hotkey-status").textContent = "Error: " + error;
 });
 
 // ===== Search =====
@@ -513,6 +666,9 @@ window.addEventListener("keydown", (e) => {
       pasteSelected();
       break;
     case "Delete":
+      // While typing in the search field, Delete edits text — don't let it
+      // delete the selected clip. (Arrows/Enter still drive the list.)
+      if (e.target instanceof HTMLInputElement) break;
       e.preventDefault();
       if (filtered[selectedIndex]) deleteItem(filtered[selectedIndex].id);
       break;
@@ -541,6 +697,9 @@ listen("history-updated", (event) => {
   applyFilter();
 });
 listen("overlay-shown", () => {
+  // Reset any stale detail modal from the previous showing.
+  detailEl.classList.add("hidden");
+  detailItem = null;
   searchEl.value = "";
   $("#clear-search").classList.add("hidden");
   selectedIndex = 0;
@@ -551,7 +710,17 @@ listen("overlay-shown", () => {
   switchView("history");
   refresh();
   searchEl.focus();
+  replayEnter();
 });
+
+// CSS animations only play once per element — the webview persists across
+// hide/show, so replay the panel's enter animation by removing the class,
+// forcing a style flush, and re-adding it.
+function replayEnter() {
+  overlayEl.classList.remove("enter");
+  void overlayEl.offsetWidth;
+  overlayEl.classList.add("enter");
+}
 listen("settings-updated", (event) => {
   settings = event.payload;
   document.body.dataset.theme = settings.theme;
@@ -563,6 +732,7 @@ listen("settings-updated", (event) => {
 
 // ===== Init =====
 (async function init() {
+  await checkDependencies();
   await loadSettings();
   await refresh();
   searchEl.focus();
