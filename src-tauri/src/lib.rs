@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use store::{ClipItem, Settings, Store};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
@@ -300,7 +300,8 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let open_i = MenuItem::with_id(app, "open", "Open Cleepboard", true, None::<&str>)?;
     let clear_i = MenuItem::with_id(app, "clear", "Clear history", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open_i, &clear_i, &quit_i])?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&open_i, &clear_i, &sep, &quit_i])?;
 
     let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(app.default_window_icon().unwrap().clone())

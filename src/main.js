@@ -133,10 +133,10 @@ function clipEl(item) {
     : "";
 
   el.innerHTML = `
-    <div class="clip-icon">${icon}</div>
+    <div class="clip-icon${isFile ? " file" : ""}">${icon}</div>
     <div class="clip-body">
       <div class="${textCls}">${escapeHtml(item.preview || "")}</div>
-      <div class="clip-meta">${timeAgo(item.timestamp)} ${pin}</div>
+      <div class="clip-meta">${timeAgo(item.timestamp)}${pin}</div>
     </div>
     <div class="clip-actions">
       <button class="icon-btn ${item.pinned ? "active" : ""}" data-act="pin" title="Pin">
@@ -194,7 +194,7 @@ function highlightSelected(viaKeyboard = false) {
     // The accent ring marks the keyboard-highlighted row only; mouse hover
     // sets the selected fill without the ring (ClipCard/Focused vs Selected).
     el.classList.toggle("focused", on && viaKeyboard);
-    if (on) el.scrollIntoView({ block: "nearest" });
+    if (on && viaKeyboard) el.scrollIntoView({ block: "nearest" });
   });
 }
 
@@ -235,7 +235,7 @@ async function openDetail(item) {
   // on Wayland it is `null` and we show "Unknown" (see Plan 05).
   const time = new Date(item.timestamp * 1000).toLocaleString();
   const src = item.source_app ? escapeHtml(item.source_app) : "Unknown";
-  meta.innerHTML = `<span>Copied ${time}</span><span class="detail-meta-sep">·</span><span>From ${src}</span>`;
+  meta.innerHTML = `<span>Copied ${time} <span class="detail-meta-sep">·</span> From ${src}</span>`;
   if (item.kind === "image") {
     const url = await invoke("get_image_data_url", { id: item.id }).catch(() => null);
     body.innerHTML = url
@@ -384,6 +384,9 @@ const EMOJI = [
   { ch: "»", name: "quote right guillemet" },
 ];
 
+let emojiItems = [];
+let emojiIndex = 0;
+
 function renderEmoji(query) {
   const grid = $("#emoji-grid");
   grid.innerHTML = "";
@@ -391,18 +394,31 @@ function renderEmoji(query) {
   const list = q
     ? EMOJI.filter((e) => e.name.includes(q) || e.ch === q)
     : EMOJI;
+  emojiItems = list;
+  emojiIndex = 0;
   if (list.length === 0) {
     grid.innerHTML = '<div class="emoji-empty">No emoji match "' + escapeHtml(query) + '"</div>';
     return;
   }
-  list.forEach((e) => {
+  list.forEach((e, i) => {
     const cell = document.createElement("div");
     cell.className = "emoji-cell";
     cell.textContent = e.ch;
     cell.title = e.name;
     cell.addEventListener("click", () => copyRaw(e.ch));
+    cell.addEventListener("mouseenter", () => {
+      emojiIndex = i;
+      highlightEmoji();
+    });
     grid.appendChild(cell);
   });
+  highlightEmoji();
+}
+
+function highlightEmoji(scroll = false) {
+  const cells = document.querySelectorAll("#emoji-grid .emoji-cell");
+  cells.forEach((c, i) => c.classList.toggle("selected", i === emojiIndex));
+  if (scroll && cells[emojiIndex]) cells[emojiIndex].scrollIntoView({ block: "nearest" });
 }
 
 async function copyRaw(text) {
@@ -644,6 +660,24 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     e.preventDefault();
     invoke("hide_window");
+    return;
+  }
+  if (currentView === "emoji") {
+    const cols = 8;
+    switch (e.key) {
+      case "ArrowRight": emojiIndex = Math.min(emojiIndex + 1, emojiItems.length - 1); break;
+      case "ArrowLeft": emojiIndex = Math.max(emojiIndex - 1, 0); break;
+      case "ArrowDown": emojiIndex = Math.min(emojiIndex + cols, emojiItems.length - 1); break;
+      case "ArrowUp": emojiIndex = Math.max(emojiIndex - cols, 0); break;
+      case "Enter":
+        e.preventDefault();
+        if (emojiItems[emojiIndex]) copyRaw(emojiItems[emojiIndex].ch);
+        return;
+      case "Tab": cycleView(e); return;
+      default: return;
+    }
+    e.preventDefault();
+    highlightEmoji(true);
     return;
   }
   if (currentView !== "history") {
