@@ -334,7 +334,7 @@ impl Store {
             self.items = keep;
             drop
         } else {
-            self.items.drain(..).collect()
+            std::mem::take(&mut self.items)
         };
         for item in &removed {
             self.cleanup_image(item);
