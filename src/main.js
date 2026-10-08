@@ -587,6 +587,8 @@ async function loadSettings() {
 async function saveSettings() {
   settings = await invoke("set_settings", { settings });
   document.body.dataset.theme = settings.theme;
+  // set_settings doesn't emit settings-updated — sync side effects here too.
+  syncPasteLabel();
 }
 
 $("#auto-paste").addEventListener("change", (e) => { settings.auto_paste = e.target.checked; saveSettings(); });
