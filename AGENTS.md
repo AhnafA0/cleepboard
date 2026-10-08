@@ -34,9 +34,10 @@ The app tolerates missing helper tools (see Conventions) — install at least
 
 ## Conventions
 
-- Rust: minimal external deps (tauri, serde, serde_json, once_cell). Prefer
+- Rust: minimal external deps (tauri, serde, serde_json, image). Prefer
   std / small hand-rolled helpers over pulling in new crates unless clearly
-  justified.
+  justified. `image` is PNG-only, used by `store.rs` for clipboard-image
+  thumbnails.
 - Clipboard I/O: **reads** via `wl-paste` (Wayland) / `xclip` (X11); **writes** via
   `xclip` on both backends (on Wayland, Mutter bridges the X CLIPBOARD selection
   from XWayland, which avoids `wl-copy`'s focus-stealing popup window that GNOME
@@ -67,4 +68,4 @@ The app tolerates missing helper tools (see Conventions) — install at least
 - File clips store the raw `text/uri-list` payload in `ClipItem.text`; decode
   only for the `preview` display (`percent_decode` / `uri_file_name`).
 - De-dupe/self-set signatures must stay consistent between `store.add_*` and
-  the watcher's `sig_*` in `lib.rs`.
+  the watcher's `sig_*`/`signature` helpers in `clipboard.rs`.

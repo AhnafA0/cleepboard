@@ -11,29 +11,29 @@ use std::thread;
 use std::time::Duration;
 use store::{ClipItem, Settings, Store};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 
 pub struct AppState {
     store: Mutex<Store>,
     backend: Backend,
-    // Signature of the value we last *set* ourselves, so the watcher ignores it.
+    // Signature of the value we last *set* ourselves, so the watcher ignores
+    // it. Consumed by the watcher the first time it is observed (whether the
+    // clipboard matches it or has moved on) — otherwise an external copy of
+    // identical content would be silently dropped forever.
     self_set: Mutex<Option<String>>,
-}
-
-fn sig_text(t: &str) -> String {
-    format!("t:{}", t)
-}
-fn sig_image(len: usize) -> String {
-    format!("i:{}", len)
-}
-fn sig_file(payload: &str) -> String {
-    format!("f:{}", payload)
 }
 
 #[tauri::command]
 fn get_history(state: State<AppState>) -> Vec<ClipItem> {
-    state.store.lock().unwrap().items.clone()
+    state.store.lock().unwrap().summaries()
+}
+
+/// Case-insensitive search over preview + the leading slice of each text
+/// payload (the list payload carries no `text` — see `Store::summaries`).
+#[tauri::command]
+fn search_history(state: State<AppState>, query: String) -> Vec<ClipItem> {
+    state.store.lock().unwrap().search(&query)
 }
 
 #[tauri::command]
@@ -53,21 +53,21 @@ fn set_settings(state: State<AppState>, settings: Settings) -> Settings {
 fn toggle_pin(state: State<AppState>, id: String) -> Vec<ClipItem> {
     let mut store = state.store.lock().unwrap();
     store.toggle_pin(&id);
-    store.items.clone()
+    store.summaries()
 }
 
 #[tauri::command]
 fn delete_item(state: State<AppState>, id: String) -> Vec<ClipItem> {
     let mut store = state.store.lock().unwrap();
     store.delete(&id);
-    store.items.clone()
+    store.summaries()
 }
 
 #[tauri::command]
 fn clear_history(state: State<AppState>, keep_pinned: bool) -> Vec<ClipItem> {
     let mut store = state.store.lock().unwrap();
     store.clear(keep_pinned);
-    store.items.clone()
+    store.summaries()
 }
 
 /// Read the full text of an item (for the detail view).
@@ -77,12 +77,26 @@ fn get_item_text(state: State<AppState>, id: String) -> Option<String> {
     store.find(&id).and_then(|i| i.text.clone())
 }
 
-/// Return a data URL for an image item so the frontend can render it.
+/// Return a data URL for an image item's thumbnail — bounded (~96px) so the
+/// list doesn't pull every full-size PNG over IPC on each render.
+#[tauri::command]
+fn get_image_thumb(state: State<AppState>, id: String) -> Option<String> {
+    let path = {
+        let store = state.store.lock().unwrap();
+        let item = store.find(&id)?;
+        store.ensure_thumb(item)?
+    };
+    let bytes = std::fs::read(path).ok()?;
+    Some(format!("data:image/png;base64,{}", base64_encode(&bytes)))
+}
+
+/// Return a data URL for an image item's full-size PNG (detail view only).
 #[tauri::command]
 fn get_image_data_url(state: State<AppState>, id: String) -> Option<String> {
     let path = {
         let store = state.store.lock().unwrap();
-        store.find(&id).and_then(|i| i.image_path.clone())?
+        let item = store.find(&id)?;
+        store.image_file(item)?
     };
     let bytes = std::fs::read(path).ok()?;
     Some(format!("data:image/png;base64,{}", base64_encode(&bytes)))
@@ -91,10 +105,13 @@ fn get_image_data_url(state: State<AppState>, id: String) -> Option<String> {
 #[tauri::command]
 fn copy_item(app: AppHandle, state: State<AppState>, id: String, paste: bool) -> bool {
     let backend = state.backend;
-    let (kind, text, image_path) = {
+    let (kind, text, image_bytes) = {
         let store = state.store.lock().unwrap();
         match store.find(&id) {
-            Some(i) => (i.kind.clone(), i.text.clone(), i.image_path.clone()),
+            Some(i) => {
+                let bytes = store.image_file(i).and_then(|p| std::fs::read(p).ok());
+                (i.kind.clone(), i.text.clone(), bytes)
+            }
             None => return false,
         }
     };
@@ -102,12 +119,12 @@ fn copy_item(app: AppHandle, state: State<AppState>, id: String, paste: bool) ->
     let ok = match kind.as_str() {
         "text" => {
             let t = text.unwrap_or_default();
-            *state.self_set.lock().unwrap() = Some(sig_text(&t));
+            *state.self_set.lock().unwrap() = Some(clipboard::sig_text(&t));
             clipboard::set_text(backend, &t)
         }
-        "image" => match image_path.and_then(|p| std::fs::read(p).ok()) {
+        "image" => match image_bytes {
             Some(bytes) => {
-                *state.self_set.lock().unwrap() = Some(sig_image(bytes.len()));
+                *state.self_set.lock().unwrap() = Some(clipboard::sig_image(&bytes));
                 clipboard::set_image(backend, &bytes)
             }
             None => false,
@@ -117,7 +134,7 @@ fn copy_item(app: AppHandle, state: State<AppState>, id: String, paste: bool) ->
         // managers accept the paste.
         "file" => {
             let payload = text.unwrap_or_default();
-            *state.self_set.lock().unwrap() = Some(sig_file(&payload));
+            *state.self_set.lock().unwrap() = Some(clipboard::sig_file(&payload));
             clipboard::set_files(backend, &payload)
         }
         _ => false,
@@ -158,19 +175,35 @@ fn get_data_dir(state: State<AppState>) -> String {
 
 #[tauri::command]
 fn set_data_dir(app: AppHandle, state: State<AppState>, new_dir: String) -> Result<Settings, String> {
-    if new_dir.trim().is_empty() {
-        return Err("Directory path cannot be empty".into());
-    }
-    let new_path = PathBuf::from(&new_dir);
+    // Expand `~` and make relative paths deterministic (HOME-based), then
+    // canonicalize so `..`/symlink spellings of the same directory can't
+    // reach `fs::copy(src == dst)` (which would truncate history.json).
+    let new_path = store::expand_dir(&new_dir)?;
+    fs::create_dir_all(&new_path)
+        .map_err(|e| format!("Cannot create directory: {}", e))?;
+    let new_canon = new_path
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve directory: {}", e))?;
 
     let mut store = state.store.lock().unwrap();
     let current_dir = store.dir().to_path_buf();
+    let cur_canon = current_dir
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve current data directory: {}", e))?;
 
-    if current_dir.components().eq(new_path.components()) {
+    if cur_canon == new_canon {
         return Ok(store.settings.clone());
     }
+    // Moving into a subdirectory of the current data dir would let the
+    // post-migration purge delete the just-copied files.
+    if new_canon.starts_with(&cur_canon) {
+        return Err("Cannot move the data directory into itself".into());
+    }
 
-    let new_store = store.migrate_to(&new_path)?;
+    let new_store = store.migrate_to(&new_canon)?;
+    // Migration succeeded and the new store owns the data — drop the copy at
+    // the old location. (Canonical paths are known to differ here.)
+    store.purge_data();
     let settings = new_store.settings.clone();
     *store = new_store;
     drop(store);
@@ -179,7 +212,7 @@ fn set_data_dir(app: AppHandle, state: State<AppState>, new_dir: String) -> Resu
     let default_dir = store::config_dir_for("cleepboard");
     let _ = fs::create_dir_all(&default_dir);
     let bootstrap = Settings {
-        data_dir: new_path.to_string_lossy().to_string(),
+        data_dir: new_canon.to_string_lossy().to_string(),
         ..settings.clone()
     };
     if let Ok(s) = serde_json::to_string_pretty(&bootstrap) {
@@ -237,12 +270,20 @@ fn toggle_overlay(app: &AppHandle) {
     }
 }
 
-/// Background thread: poll the clipboard and append new content to history.
+/// Background thread: poll the clipboard signature and fetch the payload only
+/// when it changes. Images are hashed over a bounded prefix so a multi-MB PNG
+/// isn't re-downloaded every poll.
 fn spawn_watcher(app: AppHandle) {
     thread::spawn(move || {
         let state = app.state::<AppState>();
         let backend = state.backend;
-        let mut last_sig: Option<String> = None;
+        // Seed with whatever is already on the clipboard — a launch-time poll
+        // must not bump it to the top of history as if it were a new copy.
+        let mut last_sig = clipboard::signature(backend);
+        // Focused window seen on the previous poll: the fallback source-app
+        // attribution for when our own overlay (or nothing) holds focus at
+        // detection time.
+        let mut prev_focus = clipboard::active_window_name(backend);
 
         loop {
             let poll_ms = {
@@ -251,35 +292,44 @@ fn spawn_watcher(app: AppHandle) {
             };
             thread::sleep(Duration::from_millis(poll_ms));
 
-            let content = clipboard::read(backend);
-            let sig = match &content {
-                clipboard::ClipContent::Text(t) => Some(sig_text(t)),
-                clipboard::ClipContent::Image(b) => Some(sig_image(b.len())),
-                clipboard::ClipContent::Files(uris) => Some(sig_file(&uris.join("\n"))),
-                clipboard::ClipContent::Empty => None,
-            };
-            let sig = match sig {
+            let focused = clipboard::active_window_name(backend);
+            let sig = match clipboard::signature(backend) {
                 Some(s) => s,
-                None => continue,
+                None => {
+                    prev_focus = focused;
+                    continue;
+                }
             };
 
-            // Skip if unchanged since last poll.
+            // Skip if unchanged since last poll. (Checked before touching the
+            // self-set marker: unchanged content must not consume it.)
             if last_sig.as_deref() == Some(sig.as_str()) {
+                prev_focus = focused;
                 continue;
             }
-            // Skip values we set ourselves.
-            if state.self_set.lock().unwrap().as_deref() == Some(sig.as_str()) {
+            // Skip a value we set ourselves — once. take() clears it whether
+            // or not it matched: the marker exists to suppress the *echo* of
+            // our write, not to veto identical content forever.
+            if state.self_set.lock().unwrap().take().as_deref() == Some(sig.as_str()) {
                 last_sig = Some(sig);
+                prev_focus = focused;
                 continue;
             }
             last_sig = Some(sig);
 
-            // Snapshot the focused window *before* we touch the clipboard so
-            // the source-app metadata reflects the app that owned the
-            // selection at copy time. X11-only; None on Wayland.
-            let source_app = clipboard::active_window_name(backend);
+            // Source-app attribution is unavoidably poll-granular: the focused
+            // window at detection time is our best reading; when it's the
+            // overlay itself (or unreadable), fall back to the previous poll's
+            // window, which usually still was the copying app. X11-only;
+            // None on Wayland.
+            let source_app = match &focused {
+                Some(f) if f.eq_ignore_ascii_case("cleepboard") => prev_focus.clone(),
+                Some(_) => focused.clone(),
+                None => prev_focus.clone(),
+            };
 
-            let added = {
+            let content = clipboard::read(backend);
+            let changed = {
                 let mut store = state.store.lock().unwrap();
                 match content {
                     clipboard::ClipContent::Text(t) => store.add_text(t, source_app.clone()),
@@ -288,8 +338,12 @@ fn spawn_watcher(app: AppHandle) {
                     clipboard::ClipContent::Empty => false,
                 }
             };
-            if added {
-                let items = state.store.lock().unwrap().items.clone();
+            prev_focus = focused;
+            if changed {
+                // Emit on any history change — including the dedupe-hit path
+                // (existing clip bumped to top) — or an open overlay shows a
+                // stale order until reopened.
+                let items = state.store.lock().unwrap().summaries();
                 let _ = app.emit("history-updated", items);
             }
         }
@@ -303,11 +357,15 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let sep = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(app, &[&open_i, &clear_i, &sep, &quit_i])?;
 
+    // Note: tray-icon 0.23's GTK/libappindicator backend wires only the menu,
+    // icon, and label — it dispatches no click events and ignores
+    // show_menu_on_left_click. On Linux the tray's only interaction is the
+    // menu itself (left-click on appindicator shells, right-click on Plasma
+    // SNI), so "Open Cleepboard" stays its first item.
     let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("Cleepboard")
         .menu(&menu)
-        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_overlay(app),
             "clear" => {
@@ -315,17 +373,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 let items = {
                     let mut store = state.store.lock().unwrap();
                     store.clear(true);
-                    store.items.clone()
+                    store.summaries()
                 };
                 let _ = app.emit("history-updated", items);
             }
             "quit" => app.exit(0),
             _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { .. } = event {
-                toggle_overlay(tray.app_handle());
-            }
         })
         .build(app)?;
     Ok(())
@@ -360,7 +413,10 @@ pub fn run() {
     let store_dir = if bootstrap_settings.data_dir.is_empty() {
         default_dir.clone()
     } else {
-        let custom = PathBuf::from(&bootstrap_settings.data_dir);
+        // Same expansion rules as set_data_dir — a stored "~/…" or relative
+        // path must resolve identically at startup.
+        let custom = store::expand_dir(&bootstrap_settings.data_dir)
+            .unwrap_or_else(|_| PathBuf::from(&bootstrap_settings.data_dir));
         if custom.join("settings.json").exists() {
             custom
         } else {
@@ -370,7 +426,7 @@ pub fn run() {
 
     let store = Store::load(store_dir);
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // A second launch (e.g. from the global hotkey: `cleepboard --toggle`)
             // routes here. Toggle the overlay instead of opening a new window.
@@ -387,12 +443,14 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_history,
+            search_history,
             get_settings,
             set_settings,
             toggle_pin,
             delete_item,
             clear_history,
             get_item_text,
+            get_image_thumb,
             get_image_data_url,
             copy_item,
             hide_window,
@@ -441,8 +499,16 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running cleepboard");
+        .build(tauri::generate_context!())
+        .expect("error while building cleepboard");
+
+    app.run(|_app_handle, event| {
+        if let RunEvent::Exit = event {
+            // Reap the foreground wl-copy serving the clipboard (fallback
+            // write path) so it doesn't outlive us as an orphan.
+            clipboard::shutdown();
+        }
+    });
 }
 
 // Minimal base64 encoder (avoids pulling an extra crate).

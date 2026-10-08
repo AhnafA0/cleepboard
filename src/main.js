@@ -50,7 +50,9 @@ function iconFor(item) {
     const ext = m ? m[1].toUpperCase().slice(0, 4) : "FILE";
     return `<span class="clip-file-ext">${escapeHtml(ext)}</span>`;
   }
-  const t = item.text || "";
+  // `text` is not shipped in the list payload (Store::summaries strips it);
+  // the 160-char preview is enough for both link and code detection.
+  const t = item.preview || "";
   if (URL_RE.test(t.trim())) {
     return `<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>`;
   }
@@ -61,15 +63,29 @@ function iconFor(item) {
 }
 
 // ===== Rendering =====
-function applyFilter() {
-  const q = searchEl.value.trim().toLowerCase();
-  filtered = q
-    ? items.filter((i) => (i.preview || "").toLowerCase().includes(q))
-    : items.slice();
+// applyFilter is async when a search query is present: full-text matching
+// runs backend-side (search_history) because the list payload carries no
+// clip text. `filterSeq` discards stale results from earlier keystrokes.
+let filterSeq = 0;
+async function applyFilter() {
+  const seq = ++filterSeq;
+  const q = searchEl.value.trim();
+  let base;
+  if (q) {
+    try {
+      base = await invoke("search_history", { query: q });
+    } catch (_) {
+      base = items.slice();
+    }
+    if (seq !== filterSeq) return; // a newer query already ran
+  } else {
+    base = items.slice();
+  }
+  filtered = base;
   if (activeFilter !== "all") {
     filtered = filtered.filter((i) => {
       if (activeFilter === "link")
-        return i.kind === "text" && URL_RE.test((i.text || "").trim());
+        return i.kind === "text" && URL_RE.test((i.preview || "").trim());
       if (activeFilter === "file") return i.kind === "file"; // see Plan 03
       return i.kind === activeFilter; // "text" | "image"
     });
@@ -81,6 +97,12 @@ function applyFilter() {
 function renderList() {
   listEl.innerHTML = "";
   if (filtered.length === 0) {
+    // Distinguish "nothing copied yet" from "search/filter matched nothing".
+    const narrowing = searchEl.value.trim() !== "" || activeFilter !== "all";
+    $("#empty-title").textContent = narrowing ? "No clips match" : "No clips yet";
+    $("#empty-sub").textContent = narrowing
+      ? "Try a different search or filter."
+      : "Copy something and it'll show up here.";
     emptyEl.classList.remove("hidden");
     listEl.classList.add("hidden");
     return;
@@ -91,20 +113,24 @@ function renderList() {
   const pinned = filtered.filter((i) => i.pinned);
   const rest = filtered.filter((i) => !i.pinned);
 
+  // id -> position in `filtered`, built once per render (indexOf per row
+  // would make rendering O(n²)).
+  const indexOf = new Map(filtered.map((it, idx) => [it.id, idx]));
+
   if (pinned.length) {
     listEl.appendChild(sectionHeader("Pinned", pinned.length));
-    pinned.forEach((i) => listEl.appendChild(clipEl(i)));
+    pinned.forEach((i) => listEl.appendChild(clipEl(i, indexOf)));
   }
   if (rest.length) {
     const today = rest.filter((i) => isToday(i.timestamp));
     const earlier = rest.filter((i) => !isToday(i.timestamp));
     if (today.length) {
       listEl.appendChild(sectionHeader("Today", today.length));
-      today.forEach((i) => listEl.appendChild(clipEl(i)));
+      today.forEach((i) => listEl.appendChild(clipEl(i, indexOf)));
     }
     if (earlier.length) {
       listEl.appendChild(sectionHeader("Earlier", earlier.length));
-      earlier.forEach((i) => listEl.appendChild(clipEl(i)));
+      earlier.forEach((i) => listEl.appendChild(clipEl(i, indexOf)));
     }
   }
   highlightSelected();
@@ -117,8 +143,8 @@ function sectionHeader(label, count) {
   return el;
 }
 
-function clipEl(item) {
-  const idx = filtered.indexOf(item);
+function clipEl(item, indexOf) {
+  const idx = indexOf.get(item.id);
   const el = document.createElement("div");
   el.className = "clip";
   el.dataset.index = idx;
@@ -127,7 +153,8 @@ function clipEl(item) {
   const icon = iconFor(item);
   const isImg = item.kind === "image";
   const isFile = item.kind === "file";
-  const textCls = !isFile && looksLikeCode(item.text || "") ? "clip-text mono" : "clip-text";
+  // `text` isn't in the list payload — the preview is enough for code detection.
+  const textCls = !isFile && looksLikeCode(item.preview || "") ? "clip-text mono" : "clip-text";
   const pin = item.pinned
     ? `<span class="pin-chip"><svg viewBox="0 0 24 24"><path d="M12 2l2 7h7l-5.5 4 2 7L12 16l-5.5 4 2-7L3 9h7z"/></svg>Pinned</span>`
     : "";
@@ -173,7 +200,8 @@ function clipEl(item) {
 }
 
 async function loadThumb(container, id) {
-  const url = await invoke("get_image_data_url", { id }).catch(() => null);
+  // Bounded thumbnail — the full PNG only loads in the detail view.
+  const url = await invoke("get_image_thumb", { id }).catch(() => null);
   if (url) {
     container.innerHTML = `<img src="${url}" alt="" />`;
   } else {
@@ -423,9 +451,14 @@ function highlightEmoji(scroll = false) {
 
 async function copyRaw(text) {
   // Use the navigator clipboard for emoji (frontend has user gesture).
+  // On failure keep the overlay open and say so — hiding it would look like
+  // the copy succeeded.
   try {
     await navigator.clipboard.writeText(text);
-  } catch (_) {}
+  } catch (_) {
+    showToast("Couldn't copy — the clipboard isn't writable from the overlay.");
+    return;
+  }
   await invoke("hide_window");
 }
 
@@ -538,6 +571,7 @@ async function loadSettings() {
   $("#auto-paste").checked = settings.auto_paste;
   $("#theme").value = settings.theme;
   $("#max-history").value = settings.max_history;
+  syncPasteLabel();
 
   const currentDir = await invoke("get_data_dir");
   $("#data-dir").value = currentDir;
@@ -553,6 +587,8 @@ async function loadSettings() {
 async function saveSettings() {
   settings = await invoke("set_settings", { settings });
   document.body.dataset.theme = settings.theme;
+  // set_settings doesn't emit settings-updated — sync side effects here too.
+  syncPasteLabel();
 }
 
 $("#auto-paste").addEventListener("change", (e) => { settings.auto_paste = e.target.checked; saveSettings(); });
@@ -663,7 +699,9 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (currentView === "emoji") {
-    const cols = 8;
+    // Column count comes from the live grid style, not a second constant —
+    // the CSS owns the layout.
+    const cols = emojiCols();
     switch (e.key) {
       case "ArrowRight": emojiIndex = Math.min(emojiIndex + 1, emojiItems.length - 1); break;
       case "ArrowLeft": emojiIndex = Math.max(emojiIndex - 1, 0); break;
@@ -717,6 +755,14 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+function emojiCols() {
+  // computed gridTemplateColumns is a space-separated list of resolved track
+  // sizes (e.g. "58px 58px 58px …"); counting entries gives the column count.
+  const tpl = getComputedStyle($("#emoji-grid")).gridTemplateColumns;
+  const n = tpl && tpl !== "none" ? tpl.split(" ").filter(Boolean).length : 0;
+  return Math.max(1, n || 8);
+}
+
 function cycleView(e) {
   e.preventDefault();
   const order = ["history", "emoji", "settings"];
@@ -762,7 +808,14 @@ listen("settings-updated", (event) => {
   $("#theme").value = settings.theme;
   $("#max-history").value = settings.max_history;
   $("#data-dir").value = settings.data_dir || "";
+  syncPasteLabel();
 });
+
+// The detail dialog's action button copies always and pastes only when
+// auto-paste is on — the label has to follow the setting.
+function syncPasteLabel() {
+  $("#detail-copy").textContent = settings.auto_paste ? "Copy & paste" : "Copy";
+}
 
 // ===== Init =====
 (async function init() {

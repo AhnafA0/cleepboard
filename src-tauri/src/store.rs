@@ -3,7 +3,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Largest text payload stored per clip. Bigger copies are skipped outright:
+/// a multi-megabyte text would be re-serialized into history.json on every
+/// mutation and shipped over IPC to every render.
+const MAX_TEXT_BYTES: usize = 256 * 1024;
+/// Largest image payload stored per clip.
+const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+/// Text search covers the preview plus this leading slice of a clip's full
+/// payload — deep enough for real use without lowering megabytes per query.
+const SEARCH_TEXT_CAP: usize = 64 * 1024;
+/// Longest edge of a stored thumbnail, in pixels.
+const THUMB_MAX_DIM: u32 = 96;
+/// Bytes of an image payload hashed for the watcher's signature. The prefix
+/// is enough to distinguish images; hashing a multi-MB PNG whole on every
+/// poll is what the cap avoids.
+const IMAGE_SIG_PREFIX: usize = 64 * 1024;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ClipItem {
     pub id: String,
     pub kind: String, // "text" | "image" | "file"
@@ -15,9 +32,23 @@ pub struct ClipItem {
     // Name of the app that owned the clipboard selection at copy time. Captured
     // on X11 via `xdotool getactivewindow getwindowname`; `None` on Wayland
     // (no reliable portal-free way to read the focused app from a background
-    // process). `#[serde(default)]` keeps old `history.json` files loadable.
-    #[serde(default)]
+    // process).
     pub source_app: Option<String>,
+}
+
+impl Default for ClipItem {
+    fn default() -> Self {
+        ClipItem {
+            id: String::new(),
+            kind: "text".into(),
+            text: None,
+            image_path: None,
+            preview: String::new(),
+            pinned: false,
+            timestamp: 0,
+            source_app: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,7 +58,6 @@ pub struct Settings {
     pub auto_paste: bool,
     pub theme: String, // "system" | "light" | "dark"
     pub poll_ms: u64,
-    pub launch_on_login: bool,
     pub data_dir: String, // empty = use default config dir
 }
 
@@ -38,7 +68,6 @@ impl Default for Settings {
             auto_paste: true,
             theme: "system".into(),
             poll_ms: 700,
-            launch_on_login: false,
             data_dir: String::new(),
         }
     }
@@ -57,6 +86,27 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Write `contents` to `path` atomically: tmp file in the same directory,
+/// then rename. A crash mid-write can then only ever lose the *new* file —
+/// the previous history.json/settings.json survives intact.
+fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, contents)?;
+    fs::rename(&tmp, path)
+}
+
+/// First `max_bytes` of `s`, not splitting a UTF-8 char boundary.
+fn head_slice(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 impl Store {
     pub fn load(dir: PathBuf) -> Self {
         let _ = fs::create_dir_all(&dir);
@@ -67,10 +117,21 @@ impl Store {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
 
-        let items: Vec<ClipItem> = fs::read_to_string(dir.join("history.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let history_path = dir.join("history.json");
+        let items: Vec<ClipItem> = match fs::read_to_string(&history_path) {
+            Ok(s) => match serde_json::from_str(&s) {
+                Ok(items) => items,
+                // Corrupt history (crash mid-write predating atomic saves, or
+                // hand-edit): move it aside instead of letting the next save
+                // silently wipe the only copy of the user's clips.
+                Err(_) => {
+                    let bak = dir.join(format!("history.corrupt-{}.json", now_secs()));
+                    let _ = fs::rename(&history_path, &bak);
+                    Vec::new()
+                }
+            },
+            Err(_) => Vec::new(),
+        };
 
         Store { items, settings, dir }
     }
@@ -84,6 +145,9 @@ impl Store {
     }
 
     /// Migrate all data (history, images, settings) to a new directory.
+    /// `new_dir` must be canonicalized already and provably different from
+    /// the current dir — `set_data_dir` enforces that. On success the caller
+    /// follows with `purge_data` on the old store.
     pub fn migrate_to(&self, new_dir: &Path) -> Result<Store, String> {
         fs::create_dir_all(new_dir)
             .map_err(|e| format!("Cannot create directory: {}", e))?;
@@ -124,7 +188,7 @@ impl Store {
             }
             let fixed = serde_json::to_string_pretty(&items)
                 .map_err(|e| format!("Cannot serialize fixed history: {}", e))?;
-            fs::write(&history_dst, fixed)
+            write_atomic(&history_dst, &fixed)
                 .map_err(|e| format!("Cannot write fixed history: {}", e))?;
         }
 
@@ -133,28 +197,65 @@ impl Store {
         let settings_dst = new_dir.join("settings.json");
         let s = serde_json::to_string_pretty(&new_settings)
             .map_err(|e| format!("Cannot serialize settings: {}", e))?;
-        fs::write(&settings_dst, s)
+        write_atomic(&settings_dst, &s)
             .map_err(|e| format!("Cannot write settings: {}", e))?;
 
         Ok(Store::load(new_dir.to_path_buf()))
     }
 
+    /// Remove the data artifacts this store owns (history.json + images/)
+    /// after a successful migrate_to, so the old location doesn't keep a
+    /// stale copy of everything. The directory itself and settings.json are
+    /// left alone — the dir may be the shared config dir, and "Move" is not
+    /// "wipe the folder".
+    pub fn purge_data(&self) {
+        let _ = fs::remove_file(self.dir.join("history.json"));
+        let _ = fs::remove_dir_all(self.images_dir());
+    }
+
     pub fn save_history(&self) {
         if let Ok(s) = serde_json::to_string_pretty(&self.items) {
-            let _ = fs::write(self.dir.join("history.json"), s);
+            let _ = write_atomic(&self.dir.join("history.json"), &s);
         }
     }
 
     pub fn save_settings(&self) {
         if let Ok(s) = serde_json::to_string_pretty(&self.settings) {
-            let _ = fs::write(self.dir.join("settings.json"), s);
+            let _ = write_atomic(&self.dir.join("settings.json"), &s);
         }
     }
 
-    /// Add a text clip. Returns true if it was newly added.
+    /// A copy of each item with the bulky fields (`text`, `image_path`)
+    /// stripped — what the UI list needs. Full text is fetched on demand via
+    /// `get_item_text`; images via `get_image_thumb` / `copy_item`'s own lookup.
+    pub fn summaries(&self) -> Vec<ClipItem> {
+        self.items.iter().map(stripped).collect()
+    }
+
+    /// Case-insensitive substring match over the preview and the first
+    /// SEARCH_TEXT_CAP bytes of a text clip's payload. Returns stripped items.
+    pub fn search(&self, query: &str) -> Vec<ClipItem> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return self.summaries();
+        }
+        self.items
+            .iter()
+            .filter(|i| {
+                i.preview.to_lowercase().contains(&q)
+                    || i.text
+                        .as_deref()
+                        .map(|t| head_slice(t, SEARCH_TEXT_CAP).to_lowercase().contains(&q))
+                        .unwrap_or(false)
+            })
+            .map(stripped)
+            .collect()
+    }
+
+    /// Add a text clip. Returns true whenever history changed (new clip, or
+    /// an existing identical clip bumped to the top).
     pub fn add_text(&mut self, text: String, source_app: Option<String>) -> bool {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
+        if text.trim().is_empty() || text.len() > MAX_TEXT_BYTES {
             return false;
         }
         // De-dupe: if identical text already exists, move it to top (or keep pinned position).
@@ -168,7 +269,7 @@ impl Store {
             existing.source_app = source_app;
             self.insert_respecting_pins(existing);
             self.save_history();
-            return false;
+            return true;
         }
         let preview: String = text.chars().take(160).collect();
         let item = ClipItem {
@@ -187,18 +288,22 @@ impl Store {
         true
     }
 
-    /// Add an image clip from raw PNG bytes. Returns true if newly added.
+    /// Add an image clip from raw PNG bytes. Returns true if history changed.
+    /// Also writes a bounded thumbnail used by the list view so renders don't
+    /// base64 the full payload per clip.
     pub fn add_image(&mut self, bytes: &[u8], source_app: Option<String>) -> bool {
-        if bytes.is_empty() {
+        if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
             return false;
         }
         let sig = simple_hash(bytes);
-        // De-dupe by stored signature embedded in filename.
+        // De-dupe by stored signature embedded in filename. The match is
+        // anchored to the filename's `_{sig}.png` tail so an all-digit sig
+        // can't collide with the timestamp segment.
         if let Some(pos) = self.items.iter().position(|i| {
             i.kind == "image"
                 && i.image_path
                     .as_deref()
-                    .map(|p| p.contains(&sig))
+                    .map(|p| image_sig_matches(p, &sig))
                     .unwrap_or(false)
         }) {
             let mut existing = self.items.remove(pos);
@@ -206,13 +311,18 @@ impl Store {
             existing.source_app = source_app;
             self.insert_respecting_pins(existing);
             self.save_history();
-            return false;
+            return true;
         }
         let fname = format!("img_{}_{}.png", now_secs(), sig);
         let path = self.images_dir().join(&fname);
         if fs::write(&path, bytes).is_err() {
             return false;
         }
+        // Thumbnail alongside the full image; failure just means the UI falls
+        // back to the full-size data URL.
+        let thumb_path = self.images_dir().join(format!("thumb_{}", fname));
+        let _ = write_thumbnail(bytes, &thumb_path);
+
         let item = ClipItem {
             id: gen_id(),
             kind: "image".into(),
@@ -236,7 +346,7 @@ impl Store {
     /// Add a file clip from a list of `file://` URIs (one copy action = one
     /// clip, even for multiple files). The raw `text/uri-list` payload is
     /// stored in `text` so `copy_item` can re-copy it via `set_files`; the
-    /// preview is the comma-joined filenames. Returns true if newly added.
+    /// preview is the comma-joined filenames. Returns true if history changed.
     pub fn add_file(&mut self, uris: Vec<String>, source_app: Option<String>) -> bool {
         if uris.is_empty() {
             return false;
@@ -253,7 +363,7 @@ impl Store {
             existing.source_app = source_app;
             self.insert_respecting_pins(existing);
             self.save_history();
-            return false;
+            return true;
         }
         let preview: String = uris
             .iter()
@@ -274,6 +384,40 @@ impl Store {
         self.trim();
         self.save_history();
         true
+    }
+
+    /// The stored image file for `item`, verified to live directly inside our
+    /// images dir. `image_path` comes from history.json — a hand-edited file
+    /// must not turn into arbitrary-file read/delete via the IPC commands.
+    pub fn image_file(&self, item: &ClipItem) -> Option<PathBuf> {
+        let path = item.image_path.as_ref()?;
+        let canon = Path::new(path).canonicalize().ok()?;
+        let images = self.images_dir().canonicalize().ok()?;
+        (canon.parent() == Some(images.as_path())).then_some(canon)
+    }
+
+    /// The thumbnail file for `item` (same containment check as `image_file`).
+    pub fn thumb_file(&self, item: &ClipItem) -> Option<PathBuf> {
+        let img = self.image_file(item)?;
+        let fname = format!("thumb_{}", img.file_name()?.to_str()?);
+        let canon = img.parent()?.join(fname).canonicalize().ok()?;
+        let images = self.images_dir().canonicalize().ok()?;
+        (canon.parent() == Some(images.as_path())).then_some(canon)
+    }
+
+    /// Lazily create (or return the path of) the thumbnail for an image that
+    /// predates thumbnails. Writes into images/ next to the source.
+    pub fn ensure_thumb(&self, item: &ClipItem) -> Option<PathBuf> {
+        if let Some(t) = self.thumb_file(item) {
+            return Some(t);
+        }
+        let img = self.image_file(item)?;
+        let bytes = fs::read(&img).ok()?;
+        let thumb_path = img
+            .parent()?
+            .join(format!("thumb_{}", img.file_name()?.to_str()?));
+        write_thumbnail(&bytes, &thumb_path).ok()?;
+        Some(thumb_path)
     }
 
     fn insert_respecting_pins(&mut self, item: ClipItem) {
@@ -301,8 +445,21 @@ impl Store {
     }
 
     fn cleanup_image(&self, item: &ClipItem) {
-        if let Some(p) = &item.image_path {
-            let _ = fs::remove_file(p);
+        // Only remove files provably inside our images dir (image_path is
+        // user-editable data). Resolve the thumbnail path before deleting the
+        // image — `thumb_file` verifies containment via the image itself and
+        // would fail on an already-removed file.
+        let img = self.image_file(item);
+        let thumb = img.as_ref().and_then(|p| {
+            p.file_name()
+                .and_then(|f| f.to_str())
+                .map(|f| p.with_file_name(format!("thumb_{}", f)))
+        });
+        if let Some(p) = img {
+            let _ = fs::remove_file(&p);
+        }
+        if let Some(t) = thumb {
+            let _ = fs::remove_file(t);
         }
     }
 
@@ -341,6 +498,43 @@ impl Store {
         }
         self.save_history();
     }
+}
+
+/// Clone an item with the heavyweight fields blanked — the shape the UI list
+/// and `history-updated` payloads travel in.
+fn stripped(item: &ClipItem) -> ClipItem {
+    ClipItem {
+        text: None,
+        image_path: None,
+        ..item.clone()
+    }
+}
+
+/// `file_name` ends with the `_{sig}.png` tail produced by add_image —
+/// anchored so an all-digit sig can't match the timestamp segment instead.
+fn image_sig_matches(path: &str, sig: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.ends_with(&format!("_{}.png", sig)))
+        .unwrap_or(false)
+}
+
+/// Decode `bytes` (any supported image format), resize to THUMB_MAX_DIM on
+/// the long edge, and save as PNG at `path`.
+fn write_thumbnail(bytes: &[u8], path: &Path) -> std::io::Result<()> {
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    img.thumbnail(THUMB_MAX_DIM, THUMB_MAX_DIM)
+        .save(path)
+        .map_err(|e| std::io::Error::other(e.to_string()))
+}
+
+/// FNV-1a over the first IMAGE_SIG_PREFIX bytes of an image payload — the
+/// signature the watcher and self-set marker use. Bounded so a multi-MB PNG
+/// doesn't cost a full read every poll.
+pub fn image_sig(bytes: &[u8]) -> String {
+    simple_hash(&bytes[..bytes.len().min(IMAGE_SIG_PREFIX)])
 }
 
 fn gen_id() -> String {
@@ -406,7 +600,6 @@ fn simple_hash(bytes: &[u8]) -> String {
     format!("{:x}", hash)
 }
 
-#[allow(dead_code)]
 pub fn config_dir_for(app_name: &str) -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
@@ -417,6 +610,31 @@ pub fn config_dir_for(app_name: &str) -> PathBuf {
         return Path::new(&home).join(".config").join(app_name);
     }
     PathBuf::from(".").join(app_name)
+}
+
+/// Expand a user-entered data-dir path: `~`/`~/…` against $HOME, bare
+/// relative paths against $HOME too (a GUI app's launch cwd is arbitrary —
+/// HOME is the only base the user can predict).
+pub fn expand_dir(input: &str) -> Result<PathBuf, String> {
+    let t = input.trim();
+    if t.is_empty() {
+        return Err("Directory path cannot be empty".into());
+    }
+    let home = || -> Result<PathBuf, String> {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .map_err(|_| "cannot resolve path: $HOME is not set".to_string())
+    };
+    let expanded = if t == "~" {
+        home()?
+    } else if let Some(rest) = t.strip_prefix("~/") {
+        home()?.join(rest)
+    } else if Path::new(t).is_absolute() {
+        PathBuf::from(t)
+    } else {
+        home()?.join(t)
+    };
+    Ok(expanded)
 }
 
 #[cfg(test)]
@@ -465,5 +683,34 @@ mod tests {
         assert_eq!(uri_file_name("file:///tmp/report.final.pdf"), "report.final.pdf");
         // No file:// prefix and no path separators: fall back to the decoded value.
         assert_eq!(uri_file_name("plain%20name"), "plain name");
+    }
+
+    #[test]
+    fn image_sig_match_is_anchored() {
+        // Signature is anchored to the filename tail, so a sig that happens to
+        // be all digits can't match the timestamp of an unrelated image.
+        assert!(image_sig_matches("/d/images/img_1700000000_abc123.png", "abc123"));
+        assert!(!image_sig_matches("/d/images/img_1700000000_deadbeef.png", "7000000000"));
+        assert!(!image_sig_matches("/d/images/img_1234_5678.png", "34_5678"));
+    }
+
+    #[test]
+    fn head_slice_respects_utf8_boundaries() {
+        // "aébc" = 5 bytes (é is 2): cutting at byte 2 must not split é.
+        assert_eq!(head_slice("aébc", 2), "a");
+        assert_eq!(head_slice("aébc", 3), "aé");
+        assert_eq!(head_slice("aébc", 4), "aéb");
+        assert_eq!(head_slice("aébc", 5), "aébc");
+        assert_eq!(head_slice("short", 100), "short");
+    }
+
+    #[test]
+    fn expand_dir_tilde_and_relative() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_dir("~/clips").unwrap(), Path::new(&home).join("clips"));
+        assert_eq!(expand_dir("~").unwrap(), Path::new(&home));
+        assert_eq!(expand_dir("rel/dir").unwrap(), Path::new(&home).join("rel/dir"));
+        assert_eq!(expand_dir("/abs/dir").unwrap(), Path::new("/abs/dir"));
+        assert!(expand_dir("   ").is_err());
     }
 }

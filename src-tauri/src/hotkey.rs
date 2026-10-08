@@ -128,6 +128,13 @@ impl Binding {
         if rest.is_empty() {
             return None;
         }
+        // A global keybinding must carry at least one real modifier — a bare
+        // `v` or `F5` (or even Shift+X, which is just a capital letter) would
+        // swallow normal typing system-wide. `register_hotkey` is webview-
+        // exposed, so the guard lives here in the parser.
+        if !(b.ctrl || b.alt || b.supr) {
+            return None;
+        }
         b.key = rest.to_string();
         Some(b)
     }
@@ -416,9 +423,11 @@ fn gnome_register(b: &Binding) -> Result<String, String> {
     let command = exe_toggle_shell_cmd()?;
     let binding = b.gtk();
 
-    // Read the current list of custom keybinding paths.
+    // Read the current list of custom keybinding paths. Fail closed: if the
+    // read fails we must NOT proceed to `set` — an assumed-empty list would
+    // wipe the user's other custom keybindings.
     let current = gsettings(&["get", GNOME_SCHEMA, "custom-keybindings"])
-        .unwrap_or_else(|| "@as []".into());
+        .ok_or("failed to read custom-keybindings")?;
 
     let mut paths: Vec<String> = parse_gvariant_list(&current);
     if !paths.iter().any(|p| p == GNOME_KB_PATH) {
@@ -440,8 +449,9 @@ fn gnome_unregister() -> Result<String, String> {
     if !has_gsettings() {
         return Err("gsettings not found".into());
     }
+    // Fail closed — same reason as gnome_register.
     let current = gsettings(&["get", GNOME_SCHEMA, "custom-keybindings"])
-        .unwrap_or_else(|| "@as []".into());
+        .ok_or("failed to read custom-keybindings")?;
     let paths: Vec<String> = parse_gvariant_list(&current)
         .into_iter()
         .filter(|p| p != GNOME_KB_PATH)
@@ -765,8 +775,10 @@ fn cinnamon_register(b: &Binding) -> Result<String, String> {
         return Err("gsettings not found (not a Cinnamon session)".into());
     }
     let command = exe_toggle_shell_cmd()?;
-    let current =
-        gsettings(&["get", CIN_SCHEMA, "custom-list"]).unwrap_or_else(|| "@as []".into());
+    // Fail closed — a failed read must not turn into an assumed-empty list
+    // whose `set` would wipe the user's other custom keybindings.
+    let current = gsettings(&["get", CIN_SCHEMA, "custom-list"])
+        .ok_or("failed to read custom-list")?;
     let mut ids = parse_gvariant_list(&current);
     if !ids.iter().any(|i| i == CIN_ID) {
         ids.push(CIN_ID.to_string());
@@ -788,8 +800,9 @@ fn cinnamon_unregister() -> Result<String, String> {
     if !has_gsettings() {
         return Err("gsettings not found".into());
     }
-    let current =
-        gsettings(&["get", CIN_SCHEMA, "custom-list"]).unwrap_or_else(|| "@as []".into());
+    // Fail closed — same reason as cinnamon_register.
+    let current = gsettings(&["get", CIN_SCHEMA, "custom-list"])
+        .ok_or("failed to read custom-list")?;
     let ids: Vec<String> = parse_gvariant_list(&current)
         .into_iter()
         .filter(|i| i != CIN_ID)
@@ -886,6 +899,10 @@ fn xfce_is_registered() -> bool {
 
 fn manual_instructions(desktop: &str, exe: &str) -> String {
     let d = desktop.to_lowercase();
+    // Every instruction text is a command line the user will paste into a
+    // config file or a "Command:" field parsed shell-style — quote the exe
+    // path so an install location with spaces can't produce a broken bind.
+    let exe = gshell_quote(exe);
     if d.contains("gnome") || d.contains("unity") || d.contains("budgie") {
         format!(
             "Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts → Add\n  Command: {} --toggle\n  Shortcut: Ctrl+Shift+V",
@@ -995,8 +1012,6 @@ mod tests {
         let b = Binding::parse("<Super>space").unwrap();
         assert!(b.supr);
         assert_eq!(b.key, "space");
-        let b = Binding::parse("F5").unwrap();
-        assert!(!b.ctrl && b.key == "F5");
     }
 
     #[test]
@@ -1004,6 +1019,19 @@ mod tests {
         assert!(Binding::parse("").is_none());
         assert!(Binding::parse("<Control>").is_none());
         assert!(Binding::parse("<Bogus>x").is_none());
+    }
+
+    #[test]
+    fn parse_binding_requires_a_modifier() {
+        // Modifier-less keys (and Shift-only, which is just a capital letter)
+        // would swallow normal typing if bound globally — reject them.
+        assert!(Binding::parse("v").is_none());
+        assert!(Binding::parse("F5").is_none());
+        assert!(Binding::parse("<Shift>v").is_none());
+        assert!(Binding::parse("<Shift>F5").is_none());
+        assert!(Binding::parse("<Control>v").is_some());
+        assert!(Binding::parse("<Alt>F5").is_some());
+        assert!(Binding::parse("<Super>v").is_some());
     }
 
     #[test]
