@@ -5,7 +5,6 @@
   --success: #40c057;
   --warning: #e8890c;
 
-  --bg-primary: #ffffff;
   --bg-secondary: #f8f9fa;
   --bg-tertiary: #e9ecef;
   --surface: #ffffff;
@@ -17,7 +16,6 @@
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
-  --radius-xl: 12px;
   /* Card radius beyond the token scale (Spotlight bar ≈ 16–20px). */
   --radius-2xl: 18px;
 
@@ -52,7 +50,6 @@
 [data-theme="dark"] {
   --accent: #60a5fa;
   --warning: #ffa94d;
-  --bg-primary: #1a1d21;
   --bg-secondary: #252a2e;
   --bg-tertiary: #2f353a;
   --surface: #1e2127;
@@ -71,7 +68,6 @@
   [data-theme="system"] {
     --accent: #60a5fa;
     --warning: #ffa94d;
-    --bg-primary: #1a1d21;
     --bg-secondary: #252a2e;
     --bg-tertiary: #2f353a;
     --surface: #1e2127;
@@ -436,7 +432,7 @@ html, body {
 
 .kbd-badge {
   font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 500;
-  background: var(--surface); border: 1px solid var(--border); border-bottom-width: 2px;
+  background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 4px 8px; color: var(--text-secondary);
   white-space: nowrap; flex-shrink: 0;
 }
@@ -477,7 +473,7 @@ html, body {
 .hints span { display: inline-flex; align-items: center; gap: 4px; }
 kbd {
   font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 500; background: var(--bg-secondary);
-  border: 1px solid var(--border); border-bottom-width: 2px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 1px 5px; color: var(--text-secondary);
 }
 

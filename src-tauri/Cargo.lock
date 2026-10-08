@@ -475,7 +475,7 @@ dependencies = [
 name = "cleepboard"
 version = "0.1.0"
 dependencies = [
- "once_cell",
+ "image",
  "serde",
  "serde_json",
  "tauri",

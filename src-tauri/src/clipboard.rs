@@ -1,6 +1,8 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+
+use crate::store;
 
 /// The currently-live foreground `wl-copy` child that owns the clipboard
 /// selection (only used on the `wl-copy` fallback path — see
@@ -10,6 +12,11 @@ use std::sync::Mutex;
 /// app (with its own notifications and running-app entry). Each new `set_*`
 /// call kills the previous owner and stores the new one.
 static WL_COPY_CHILD: Mutex<Option<Child>> = Mutex::new(None);
+
+/// Bytes of a clipboard payload read for signature purposes only. Images are
+/// capped here so a multi-MB PNG isn't re-downloaded on every poll; the full
+/// payload is fetched only when the signature actually changes.
+const SIG_IMAGE_CAP: usize = 64 * 1024;
 
 /// Build a `Command` for a clipboard helper with desktop startup/activation
 /// tokens stripped. Without this, every short-lived `wl-paste`/`wl-copy` we
@@ -51,6 +58,84 @@ pub enum ClipContent {
     /// holds all URIs from a single copy action.
     Files(Vec<String>),
     Empty,
+}
+
+// ---- Change-detection signatures ----
+// The watcher compares signatures each poll; `self_set` in lib.rs stores the
+// same strings to suppress our own writes. Format must stay consistent between
+// the two producers — these functions are the single source of truth.
+
+pub fn sig_text(t: &str) -> String {
+    format!("t:{}", t)
+}
+
+/// Image signature over a bounded prefix — content-based (a different image
+/// of the same byte length is no longer "unchanged") without hashing the
+/// whole payload per poll.
+pub fn sig_image(bytes: &[u8]) -> String {
+    format!("i:{}", store::image_sig(bytes))
+}
+
+pub fn sig_file(payload: &str) -> String {
+    format!("f:{}", payload)
+}
+
+/// Signature of the current clipboard, for the watcher's per-poll change
+/// check. Mirrors `read`'s mime priority but reads images only up to
+/// SIG_IMAGE_CAP bytes — the full payload is fetched via `read` once the
+/// signature differs. `None` = empty or unreadable clipboard.
+pub fn signature(backend: Backend) -> Option<String> {
+    match backend {
+        Backend::Wayland => signature_wayland(),
+        Backend::X11 => signature_x11(),
+    }
+}
+
+fn signature_wayland() -> Option<String> {
+    let types = run_capture("wl-paste", &["--list-types"]).unwrap_or_default();
+    if types.lines().any(|t| t.trim() == "image/png") {
+        if let Some(bytes) =
+            run_capture_prefix("wl-paste", &["--no-newline", "-t", "image/png"], SIG_IMAGE_CAP)
+        {
+            if !bytes.is_empty() {
+                return Some(sig_image(&bytes));
+            }
+        }
+    }
+    if let Some(uris) = read_uri_list(&types, |mime| {
+        run_capture("wl-paste", &["--no-newline", "-t", mime])
+    }) {
+        return Some(sig_file(&uris.join("\n")));
+    }
+    match run_capture("wl-paste", &["--no-newline", "-t", "text/plain"]) {
+        Some(t) if !t.is_empty() => Some(sig_text(&t)),
+        _ => None,
+    }
+}
+
+fn signature_x11() -> Option<String> {
+    let targets = run_capture("xclip", &["-selection", "clipboard", "-o", "-t", "TARGETS"])
+        .unwrap_or_default();
+    if targets.lines().any(|t| t.trim() == "image/png") {
+        if let Some(bytes) = run_capture_prefix(
+            "xclip",
+            &["-selection", "clipboard", "-o", "-t", "image/png"],
+            SIG_IMAGE_CAP,
+        ) {
+            if !bytes.is_empty() {
+                return Some(sig_image(&bytes));
+            }
+        }
+    }
+    if let Some(uris) = read_uri_list(&targets, |mime| {
+        run_capture("xclip", &["-selection", "clipboard", "-o", "-t", mime])
+    }) {
+        return Some(sig_file(&uris.join("\n")));
+    }
+    match run_capture("xclip", &["-selection", "clipboard", "-o"]) {
+        Some(t) if !t.is_empty() => Some(sig_text(&t)),
+        _ => None,
+    }
 }
 
 /// Read the current clipboard. Priority: image/png > text/uri-list (files) >
@@ -109,16 +194,19 @@ fn read_x11() -> ClipContent {
     }
 }
 
-/// Collect non-empty, trimmed lines as URIs.
+/// Collect non-empty, trimmed lines as URIs, skipping `#…` comment lines
+/// (RFC 2483 — `text/uri-list` allows them; storing one as a URI would put a
+/// phantom file in the clip).
 fn collect_uris<'a, I: Iterator<Item = &'a str>>(lines: I) -> Vec<String> {
     lines
         .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(|l| l.to_string())
         .collect()
 }
 
-/// Parse a `text/uri-list` payload into individual URIs, dropping blank lines.
+/// Parse a `text/uri-list` payload into individual URIs, dropping blank and
+/// `#`-comment lines.
 fn parse_uri_list(payload: &str) -> Vec<String> {
     collect_uris(payload.lines())
 }
@@ -234,13 +322,46 @@ fn run_capture_bytes(cmd: &str, args: &[&str]) -> Option<Vec<u8>> {
     }
 }
 
+/// Read at most `max` bytes of a command's stdout, then stop reading. Used
+/// for signatures: a multi-MB clipboard image costs 64 KiB per poll, not the
+/// whole payload. The child is always reaped — closing stdout early makes
+/// wl-paste/xclip die on SIGPIPE, and kill+wait covers the rest.
+fn run_capture_prefix(cmd: &str, args: &[&str], max: usize) -> Option<Vec<u8>> {
+    let mut child = helper(cmd)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    if let Some(mut stdout) = child.stdout.take() {
+        while buf.len() < max {
+            let want = (max - buf.len()).min(chunk.len());
+            match stdout.read(&mut chunk[..want]) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        }
+        drop(stdout);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Some(buf)
+}
+
 fn pipe_to(cmd: &str, args: &[&str], data: &[u8]) -> bool {
     // For wl-copy, run with `--foreground` so it stays a child of cleepboard
     // (in our process tree/cgroup) instead of forking into a daemon orphan
     // that GNOME surfaces as a separate "wl-clipboard" app with its own
     // notifications and running-app entry. The child is kept alive in
     // `WL_COPY_CHILD` so the clipboard value persists; the next `set_*` call
-    // kills it and replaces it.
+    // kills it and replaces it, and `shutdown()` reaps it on app exit.
     let is_wl_copy = cmd == "wl-copy";
     let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 1);
     if is_wl_copy {
@@ -260,6 +381,10 @@ fn pipe_to(cmd: &str, args: &[&str], data: &[u8]) -> bool {
     };
     if let Some(mut stdin) = child.stdin.take() {
         if stdin.write_all(data).is_err() {
+            // Reap: a failed-write child would otherwise sit as a zombie
+            // until process exit.
+            let _ = child.kill();
+            let _ = child.wait();
             return false;
         }
     }
@@ -277,6 +402,17 @@ fn pipe_to(cmd: &str, args: &[&str], data: &[u8]) -> bool {
         // xclip serves the selection in the foreground; wait for it to exit
         // once the selection is replaced.
         matches!(child.wait(), Ok(s) if s.success())
+    }
+}
+
+/// Kill and reap the foreground `wl-copy` serving the clipboard selection,
+/// if any. Called on app exit so the child doesn't outlive cleepboard as an
+/// orphan still serving the selection (and lingering as a GNOME running-app
+/// entry).
+pub fn shutdown() {
+    if let Some(mut child) = WL_COPY_CHILD.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -330,9 +466,11 @@ pub fn which(bin: &str) -> bool {
 /// app" for clip metadata. On X11 the focused window owns the clipboard
 /// selection, so `xdotool getactivewindow getwindowname` gives the copying
 /// app. Returns `None` on Wayland (no reliable portal-free way to read the
-/// focused app from a background process) or if xdotool is missing/fails.
+/// focused app from a background process) or if xdotool is missing/fails —
+/// a missing binary fails the spawn just as a `which` probe would, so this
+/// stays a single spawn per call.
 pub fn active_window_name(backend: Backend) -> Option<String> {
-    if backend != Backend::X11 || !which("xdotool") {
+    if backend != Backend::X11 {
         return None;
     }
     let name = run_capture("xdotool", &["getactivewindow", "getwindowname"])?;
@@ -423,6 +561,13 @@ mod tests {
     fn parse_uri_list_drops_blanks() {
         let payload = "file:///a.txt\n\nfile:///b.txt\n";
         assert_eq!(parse_uri_list(payload), vec!["file:///a.txt", "file:///b.txt"]);
+    }
+
+    #[test]
+    fn parse_uri_list_drops_rfc2483_comments() {
+        // text/uri-list comment lines are metadata, not URIs.
+        let payload = "#comment line\nfile:///a.txt\n# another\n";
+        assert_eq!(parse_uri_list(payload), vec!["file:///a.txt"]);
     }
 
     #[test]

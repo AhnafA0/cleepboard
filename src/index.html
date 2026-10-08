@@ -44,7 +44,7 @@
       <div id="dep-banner" class="dep-banner hidden" role="alert">
         <svg class="dep-banner-icon" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         <span id="dep-banner-text" class="dep-banner-text"></span>
-        <button id="dep-banner-close" class="icon-btn ghost" title="Dismiss">
+        <button id="dep-banner-close" class="icon-btn" title="Dismiss">
           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
@@ -63,8 +63,8 @@
           <div class="empty-icon">
             <svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="4" rx="1"/><path d="M9 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3"/></svg>
           </div>
-          <p class="empty-title">No clips yet</p>
-          <p class="empty-sub">Copy something and it'll show up here.</p>
+          <p class="empty-title" id="empty-title">No clips yet</p>
+          <p class="empty-sub" id="empty-sub">Copy something and it'll show up here.</p>
         </div>
       </main>
 
@@ -156,7 +156,7 @@
       <footer class="hints">
         <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
         <span><kbd>Enter</kbd> paste</span>
-        <span><kbd>P</kbd> pin</span>
+        <span><kbd>Ctrl</kbd><kbd>P</kbd> pin</span>
         <span><kbd>Del</kbd> remove</span>
         <span><kbd>Esc</kbd> close</span>
       </footer>
@@ -174,7 +174,9 @@
         <div id="detail-meta" class="detail-meta"></div>
         <div id="detail-body" class="dialog-body"></div>
         <footer class="dialog-foot">
-          <button id="detail-copy" class="btn primary">Copy &amp; paste</button>
+          <!-- Label set from settings by syncPasteLabel() — auto-paste off
+               means this only copies, and it must not promise a paste. -->
+          <button id="detail-copy" class="btn primary">Copy</button>
         </footer>
       </div>
     </div>
